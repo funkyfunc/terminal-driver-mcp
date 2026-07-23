@@ -66,9 +66,7 @@ export function encodeKey(name: string, appCursorMode: boolean): string {
 
   // alt+<char> is ESC-prefixed on most terminals
   const alt = key.match(/^alt\+(.)$/);
-  if (alt) return "\x1b" + alt[1];
+  if (alt) return `\x1b${alt[1]}`;
 
-  throw new Error(
-    `Unknown special key "${name}". Valid keys: ${validKeyNames().join(", ")}`
-  );
+  throw new Error(`Unknown special key "${name}". Valid keys: ${validKeyNames().join(", ")}`);
 }

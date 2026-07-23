@@ -32,7 +32,9 @@ const StepSchema = z.union([
   z
     .object({ write: z.string().default(""), keys: z.array(z.string()).default([]) })
     .strict()
-    .refine((s) => s.write !== "" || s.keys.length > 0, { message: "write step needs 'write' text or 'keys'" }),
+    .refine((s) => s.write !== "" || s.keys.length > 0, {
+      message: "write step needs 'write' text or 'keys'",
+    }),
   z
     .object({
       assert: z.string(),
@@ -40,7 +42,9 @@ const StepSchema = z.union([
       col: z.number().int().min(0).optional(),
     })
     .strict(),
-  z.object({ resize: z.tuple([z.number().int().min(20).max(500), z.number().int().min(5).max(200)]) }).strict(),
+  z
+    .object({ resize: z.tuple([z.number().int().min(20).max(500), z.number().int().min(5).max(200)]) })
+    .strict(),
   z.object({ sleep_ms: z.number().int().min(1).max(60000) }).strict(),
   z.object({ expect_exit: z.number().int(), timeout_ms: timeoutMs.default(30000) }).strict(),
 ]);
@@ -120,7 +124,9 @@ async function runStep(session: TerminalSession, step: Step): Promise<{ ok: bool
     const ok = session.exitCode === step.expect_exit;
     return {
       ok,
-      detail: ok ? `exited ${session.exitCode}` : `expected exit ${step.expect_exit}, got ${session.exitCode}`,
+      detail: ok
+        ? `exited ${session.exitCode}`
+        : `expected exit ${step.expect_exit}, got ${session.exitCode}`,
     };
   }
   if (session.exited) {
@@ -176,7 +182,12 @@ export function formatResult(result: TestResult): string {
     lines.push(`  ${mark} step ${step.index + 1}: ${step.desc} (${step.elapsedMs}ms)${detail}`);
   }
   if (result.failureScreen !== undefined) {
-    lines.push(`  Final screen:\n${result.failureScreen.split("\n").map((l) => `  | ${l}`).join("\n")}`);
+    lines.push(
+      `  Final screen:\n${result.failureScreen
+        .split("\n")
+        .map((l) => `  | ${l}`)
+        .join("\n")}`,
+    );
   }
   return lines.join("\n");
 }
@@ -190,7 +201,9 @@ export function parseTest(json: string, source: string): TestSpec {
   }
   const parsed = TestSchema.safeParse(raw);
   if (!parsed.success) {
-    const issues = parsed.error.issues.map((i) => `  ${i.path.join(".") || "(root)"}: ${i.message}`).join("\n");
+    const issues = parsed.error.issues
+      .map((i) => `  ${i.path.join(".") || "(root)"}: ${i.message}`)
+      .join("\n");
     throw new Error(`${source}: invalid test spec —\n${issues}`);
   }
   return parsed.data;
@@ -215,6 +228,10 @@ export async function runTestFiles(files: string[], print: (line: string) => voi
     print(formatResult(result));
     if (!result.ok) failures++;
   }
-  print(failures === 0 ? `\nAll ${files.length} test(s) passed.` : `\n${failures} of ${files.length} test(s) failed.`);
+  print(
+    failures === 0
+      ? `\nAll ${files.length} test(s) passed.`
+      : `\n${failures} of ${files.length} test(s) failed.`,
+  );
   return failures === 0 ? 0 : 1;
 }

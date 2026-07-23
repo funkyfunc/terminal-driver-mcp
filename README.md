@@ -1,5 +1,8 @@
 # terminal-driver-mcp
 
+[![CI](https://github.com/funkyfunc/terminal-driver-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/funkyfunc/terminal-driver-mcp/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/terminal-driver-mcp)](https://www.npmjs.com/package/terminal-driver-mcp)
+
 A PTY-backed terminal MCP server that gives AI agents a **real interactive terminal**: spawn persistent sessions, read a clean text snapshot of the rendered screen, send keystrokes, wait for patterns or idle, and assert screen state — so agents can drive and test stateful TUI applications (vim, htop, gdb, interactive git) the way a human does.
 
 ## Architecture
@@ -104,7 +107,12 @@ Then `/mcp` inside Claude Code to confirm the connection.
 
 ```sh
 npm run dev        # tsc --watch
+npm test           # build + 39-check end-to-end suite (drives real vim)
+npm run lint       # biome check
+npm run format     # biome format --write
 npm run inspector  # hand-drive tools in the MCP Inspector UI
 ```
+
+Git hooks (activated automatically by `npm install` via `core.hooksPath`): pre-commit runs lint + typecheck, pre-push runs the full test suite. CI runs the same on Ubuntu and macOS.
 
 Note: `postinstall` restores the execute bit on node-pty's prebuilt `spawn-helper` (npm strips it on macOS, which otherwise causes `posix_spawnp failed`).

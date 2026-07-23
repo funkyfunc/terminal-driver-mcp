@@ -27,8 +27,13 @@
   },
   "scripts": {
     "postinstall": "node -e \"try{const fs=require('fs'),p=require('path').join(require('path').dirname(require.resolve('node-pty/package.json')),'prebuilds');for(const d of fs.readdirSync(p)){try{fs.chmodSync(require('path').join(p,d,'spawn-helper'),0o755)}catch{}}}catch{}\"",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "build": "tsc",
     "prepublishOnly": "npm run build",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "typecheck": "tsc --noEmit",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "test": "npm run build && node test/e2e.mjs",
@@ -42,6 +47,7 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.5",
     "@types/node": "^24.0.0",
     "typescript": "^5.6.0"
   }

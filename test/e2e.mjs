@@ -1,9 +1,8 @@
 // End-to-end test: drives terminal-driver-mcp over stdio JSON-RPC and runs vim + resize scenarios.
-import { spawn } from "node:child_process";
-import { unlinkSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { join, dirname } from "node:path";
 
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
 const TESTFILE = "/tmp/terminal-driver-mcp-e2e.txt";
@@ -22,8 +21,7 @@ const pending = new Map();
 let buf = "";
 child.stdout.on("data", (d) => {
   buf += d;
-  let idx;
-  while ((idx = buf.indexOf("\n")) >= 0) {
+  for (let idx = buf.indexOf("\n"); idx >= 0; idx = buf.indexOf("\n")) {
     const line = buf.slice(0, idx);
     buf = buf.slice(idx + 1);
     if (!line.trim()) continue;
@@ -39,11 +37,10 @@ function rpc(method, params) {
   const id = nextId++;
   return new Promise((resolve) => {
     pending.set(id, resolve);
-    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
   });
 }
-const notify = (method) =>
-  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method }) + "\n");
+const notify = (method) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method })}\n`);
 
 async function call(name, args) {
   const res = await rpc("tools/call", { name, arguments: args });
@@ -57,7 +54,13 @@ function check(label, cond, detail = "") {
   console.log(`${cond ? "PASS" : "FAIL"}: ${label}`);
   if (!cond) {
     failures++;
-    if (detail) console.log(detail.split("\n").map((l) => "    " + l).join("\n"));
+    if (detail)
+      console.log(
+        detail
+          .split("\n")
+          .map((l) => `    ${l}`)
+          .join("\n"),
+      );
   }
 }
 
@@ -69,7 +72,12 @@ await rpc("initialize", {
 notify("notifications/initialized");
 
 // --- vim scenario ---
-let r = await call("session_create", { session_id: "v", command: `vim -u NONE ${TESTFILE}`, cols: 100, rows: 24 });
+let r = await call("session_create", {
+  session_id: "v",
+  command: `vim -u NONE ${TESTFILE}`,
+  cols: 100,
+  rows: 24,
+});
 check("session_create vim", !r.isError, r.text);
 
 r = await call("session_wait", { session_id: "v", pattern: "~", timeout_ms: 8000 });
@@ -101,10 +109,14 @@ check("session_create interactive shell", !r.isError, r.text);
 r = await call("session_write", { session_id: "sh", input: "", special_keys: ["bogus_key"] });
 check("unknown special key is a tool error", r.isError && r.text.includes("Unknown special key"), r.text);
 r = await call("session_read", { session_id: "nope" });
-check("unknown session is a tool error", r.isError && r.text.includes('No session'), r.text);
+check("unknown session is a tool error", r.isError && r.text.includes("No session"), r.text);
 
 // --- shell echo + resize scenario ---
-r = await call("session_write", { session_id: "sh", input: "echo marker-$((21+21))", special_keys: ["enter"] });
+r = await call("session_write", {
+  session_id: "sh",
+  input: "echo marker-$((21+21))",
+  special_keys: ["enter"],
+});
 check("shell echo", !r.isError, r.text);
 r = await call("session_wait", { session_id: "sh", pattern: "marker-42", timeout_ms: 5000 });
 check("wait for echo output", !r.isError, r.text);
@@ -113,17 +125,33 @@ r = await call("session_resize", { session_id: "sh", cols: 60, rows: 15 });
 check("session_resize", !r.isError && r.text.includes("60x15"), r.text);
 
 r = await call("session_list", {});
-check("session_list shows both sessions", !r.isError && r.text.includes("v ") && r.text.includes("sh "), r.text);
+check(
+  "session_list shows both sessions",
+  !r.isError && r.text.includes("v ") && r.text.includes("sh "),
+  r.text,
+);
 
 // --- new: execute_command one-shot ---
 r = await call("execute_command", { command: "echo one-$((40+2)); exit 0" });
-check("execute_command success", !r.isError && r.text.includes("Exit code: 0") && r.text.includes("one-42"), r.text);
+check(
+  "execute_command success",
+  !r.isError && r.text.includes("Exit code: 0") && r.text.includes("one-42"),
+  r.text,
+);
 
 r = await call("execute_command", { command: "echo doomed; exit 3" });
-check("execute_command nonzero exit code", !r.isError && r.text.includes("Exit code: 3") && r.text.includes("doomed"), r.text);
+check(
+  "execute_command nonzero exit code",
+  !r.isError && r.text.includes("Exit code: 3") && r.text.includes("doomed"),
+  r.text,
+);
 
 r = await call("execute_command", { command: "echo started; sleep 30", timeout_ms: 1000 });
-check("execute_command timeout kills and returns partial output", r.isError && r.text.includes("started"), r.text);
+check(
+  "execute_command timeout kills and returns partial output",
+  r.isError && r.text.includes("started"),
+  r.text,
+);
 
 r = await call("execute_command", { command: "pwd", cwd: "/tmp" });
 check("execute_command cwd honored", !r.isError && /\/tmp/.test(r.text), r.text);
@@ -133,20 +161,37 @@ check("bad cwd is a clear tool error", r.isError && r.text.includes("not an exis
 
 // --- new: scrollback read ---
 r = await call("execute_command", { command: "seq 1 200" });
-check("execute_command captures scrolled-off output", !r.isError && r.text.includes("\n1\n") && r.text.includes("200"), r.text);
+check(
+  "execute_command captures scrolled-off output",
+  !r.isError && r.text.includes("\n1\n") && r.text.includes("200"),
+  r.text,
+);
 
-r = await call("session_create", { session_id: "scroll", command: "seq 1 100; sleep 60", cols: 80, rows: 20 });
+r = await call("session_create", {
+  session_id: "scroll",
+  command: "seq 1 100; sleep 60",
+  cols: 80,
+  rows: 20,
+});
 await call("session_wait", { session_id: "scroll", pattern: "100", timeout_ms: 5000 });
 r = await call("session_read", { session_id: "scroll" });
-check("visible screen omits early output and hints at scrollback",
-  !r.isError && !/^1$/m.test(r.text.split("]\n")[1] ?? "") && r.text.includes("scrolled off-screen"), r.text);
+check(
+  "visible screen omits early output and hints at scrollback",
+  !r.isError && !/^1$/m.test(r.text.split("]\n")[1] ?? "") && r.text.includes("scrolled off-screen"),
+  r.text,
+);
 r = await call("session_read", { session_id: "scroll", scrollback_lines: 1000 });
 check("scrollback_lines recovers early output", !r.isError && /^1$/m.test(r.text), r.text);
 await call("session_kill", { session_id: "scroll" });
 
 // --- new: stable_screen wait mode ---
 r = await call("session_create", { session_id: "st", command: "echo settled; sleep 60" });
-r = await call("session_wait_idle", { session_id: "st", mode: "stable_screen", idle_ms: 200, timeout_ms: 5000 });
+r = await call("session_wait_idle", {
+  session_id: "st",
+  mode: "stable_screen",
+  idle_ms: 200,
+  timeout_ms: 5000,
+});
 check("stable_screen wait resolves on static screen", !r.isError && r.text.includes("unchanged"), r.text);
 await call("session_kill", { session_id: "st" });
 
@@ -157,21 +202,35 @@ check("session_create reports recording path", !!recPath, r.text);
 await call("session_write", { session_id: "rec", input: "", special_keys: ["enter"] });
 await call("session_kill", { session_id: "rec" });
 if (recPath) {
-  const cast = readFileSync(recPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const cast = readFileSync(recPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
   check("asciicast v2 header", cast[0].version === 2 && cast[0].width === 120, JSON.stringify(cast[0]));
-  check("asciicast has output and input events",
+  check(
+    "asciicast has output and input events",
     cast.some((e) => Array.isArray(e) && e[1] === "o" && e[2].includes("recorded")) &&
-    cast.some((e) => Array.isArray(e) && e[1] === "i"),
-    JSON.stringify(cast.slice(1, 5)));
+      cast.some((e) => Array.isArray(e) && e[1] === "i"),
+    JSON.stringify(cast.slice(1, 5)),
+  );
 } else {
   failures += 2;
 }
 
 // --- new: cursor + region + exact_col ---
-r = await call("session_create", { session_id: "cur", command: "printf 'ABCDEF\\nGHIJKL\\n'; sleep 60", cols: 40, rows: 10 });
+r = await call("session_create", {
+  session_id: "cur",
+  command: "printf 'ABCDEF\\nGHIJKL\\n'; sleep 60",
+  cols: 40,
+  rows: 10,
+});
 check("header includes cursor position", /cursor \d+:\d+/.test(r.text), r.text);
 r = await call("session_region", { session_id: "cur", row: 0, col: 2, width: 3, height: 2 });
-check("session_region extracts rectangle", !r.isError && r.text.includes("CDE") && r.text.includes("IJK"), r.text);
+check(
+  "session_region extracts rectangle",
+  !r.isError && r.text.includes("CDE") && r.text.includes("IJK"),
+  r.text,
+);
 r = await call("session_assert", { session_id: "cur", expected_text: "GHI", exact_row: 1, exact_col: 0 });
 check("assert exact_col pass", !r.isError, r.text);
 r = await call("session_assert", { session_id: "cur", expected_text: "GHI", exact_row: 1, exact_col: 3 });
@@ -182,7 +241,8 @@ await call("session_kill", { session_id: "cur" });
 const passingTest = {
   name: "vim regression",
   command: `vim -u NONE /tmp/terminal-driver-mcp-runner.txt`,
-  cols: 90, rows: 20,
+  cols: 90,
+  rows: 20,
   steps: [
     { wait: "~", timeout_ms: 8000 },
     { write: "iruntest", keys: ["escape"] },
@@ -192,7 +252,11 @@ const passingTest = {
   ],
 };
 r = await call("run_test", { test_json: JSON.stringify(passingTest) });
-check("run_test inline passes all steps", !r.isError && r.text.startsWith("PASS") && r.text.includes("step 5"), r.text);
+check(
+  "run_test inline passes all steps",
+  !r.isError && r.text.startsWith("PASS") && r.text.includes("step 5"),
+  r.text,
+);
 
 const failingTest = {
   name: "should fail",
@@ -200,14 +264,16 @@ const failingTest = {
   steps: [{ idle_ms: 100 }, { assert: "goodbye" }],
 };
 r = await call("run_test", { test_json: JSON.stringify(failingTest) });
-check("run_test reports failing step with screen", r.isError && r.text.includes("✗ step 2") && r.text.includes("Final screen"), r.text);
+check(
+  "run_test reports failing step with screen",
+  r.isError && r.text.includes("✗ step 2") && r.text.includes("Final screen"),
+  r.text,
+);
 
 r = await call("run_test", { test_json: JSON.stringify({ steps: [{ bogus: true }] }) });
 check("run_test rejects invalid spec", r.isError && r.text.includes("invalid test spec"), r.text);
 
 // --- kill + zombie check ---
-const pidMatch = r.text.match(/sh\s+pid=(\d+)/);
-const shPid = pidMatch ? Number(pidMatch[1]) : null;
 r = await call("session_kill", { session_id: "sh" });
 check("session_kill", !r.isError, r.text);
 r = await call("session_kill", { session_id: "v" });
@@ -219,16 +285,23 @@ const zPid = Number(r.text.match(/pid (\d+)/)[1]);
 child.kill("SIGTERM");
 await new Promise((s) => setTimeout(s, 700));
 let alive = true;
-try { process.kill(zPid, 0); } catch { alive = false; }
+try {
+  process.kill(zPid, 0);
+} catch {
+  alive = false;
+}
 check("no zombie after server SIGTERM", !alive, `pid ${zPid} still alive`);
 
 // --- new: CLI runner mode (separate process, CI shape) ---
 const cliTestFile = join(REC_DIR, "cli-test.json");
-writeFileSync(cliTestFile, JSON.stringify({
-  name: "cli smoke",
-  command: "echo cli-ok",
-  steps: [{ wait: "cli-ok" }, { expect_exit: 0 }],
-}));
+writeFileSync(
+  cliTestFile,
+  JSON.stringify({
+    name: "cli smoke",
+    command: "echo cli-ok",
+    steps: [{ wait: "cli-ok" }, { expect_exit: 0 }],
+  }),
+);
 try {
   const out = execFileSync("node", [SERVER, "run", cliTestFile], {
     encoding: "utf8",
@@ -238,11 +311,14 @@ try {
 } catch (err) {
   check("CLI run passes with exit 0", false, String(err.stdout || err));
 }
-writeFileSync(cliTestFile, JSON.stringify({
-  name: "cli fail",
-  command: "echo cli-ok",
-  steps: [{ wait: "never-appears", timeout_ms: 500 }],
-}));
+writeFileSync(
+  cliTestFile,
+  JSON.stringify({
+    name: "cli fail",
+    command: "echo cli-ok",
+    steps: [{ wait: "never-appears", timeout_ms: 500 }],
+  }),
+);
 try {
   execFileSync("node", [SERVER, "run", cliTestFile], {
     encoding: "utf8",
@@ -250,7 +326,11 @@ try {
   });
   check("CLI run fails with nonzero exit", false, "exited 0 unexpectedly");
 } catch (err) {
-  check("CLI run fails with nonzero exit", err.status === 1 && String(err.stdout).includes("FAIL"), String(err.stdout || err));
+  check(
+    "CLI run fails with nonzero exit",
+    err.status === 1 && String(err.stdout).includes("FAIL"),
+    String(err.stdout || err),
+  );
 }
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} FAILURES`);

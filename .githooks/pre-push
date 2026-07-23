@@ -1,0 +1,4 @@
+#!/bin/sh
+# Full build + end-to-end suite before anything leaves the machine.
+set -e
+npm test

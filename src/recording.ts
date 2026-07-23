@@ -21,7 +21,7 @@ export class Recording {
   private constructor(
     readonly path: string,
     private readonly fd: number,
-    private readonly startedAt: number
+    private readonly startedAt: number,
   ) {}
 
   /** Open a recording file, or return undefined if the directory is unwritable. */

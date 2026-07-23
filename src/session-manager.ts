@@ -40,7 +40,7 @@ export function getSession(id: string): TerminalSession {
         known.length
           ? `Active sessions: ${known.join(", ")}`
           : "No active sessions — use session_create first."
-      }`
+      }`,
     );
   }
   return session;
@@ -70,7 +70,7 @@ export function createSession(options: CreateSessionOptions): TerminalSession {
   }
   if (sessions.size >= MAX_SESSIONS) {
     throw new Error(
-      `Session limit (${MAX_SESSIONS}) reached. Use session_list to inspect and session_kill to free one.`
+      `Session limit (${MAX_SESSIONS}) reached. Use session_list to inspect and session_kill to free one.`,
     );
   }
   if (cwd !== undefined) {

@@ -58,7 +58,7 @@ export async function snapshotRegion(
   row: number,
   col: number,
   width: number,
-  height: number
+  height: number,
 ): Promise<string> {
   await flush(session);
   const buf = session.term.buffer.active;
@@ -103,7 +103,7 @@ export async function assertScreen(
   session: TerminalSession,
   expected: string,
   row?: number,
-  col?: number
+  col?: number,
 ): Promise<AssertResult> {
   const lines = (await snapshotText(session)).split("\n");
 
@@ -113,7 +113,10 @@ export async function assertScreen(
 
   if (row !== undefined) {
     if (row >= lines.length) {
-      return { ok: false, message: `FAIL: row ${row} is outside the visible screen (0-${lines.length - 1}).` };
+      return {
+        ok: false,
+        message: `FAIL: row ${row} is outside the visible screen (0-${lines.length - 1}).`,
+      };
     }
     const actual = lines[row];
 

@@ -19,7 +19,7 @@ export interface WaitResult {
 export async function waitForPattern(
   session: TerminalSession,
   pattern: RegExp,
-  timeoutMs: number
+  timeoutMs: number,
 ): Promise<WaitResult> {
   const start = Date.now();
   let sessionEnded = false;
@@ -42,7 +42,12 @@ export async function waitForPattern(
       };
     }
     if (elapsedMs >= timeoutMs) {
-      return { ok: false, elapsedMs, screen, message: `Timed out after ${timeoutMs}ms waiting for ${pattern}.` };
+      return {
+        ok: false,
+        elapsedMs,
+        screen,
+        message: `Timed out after ${timeoutMs}ms waiting for ${pattern}.`,
+      };
     }
     sessionEnded = session.exited;
     await sleep(50);
@@ -58,7 +63,7 @@ export async function waitForPattern(
 export async function waitForIdle(
   session: TerminalSession,
   idleMs: number,
-  timeoutMs: number
+  timeoutMs: number,
 ): Promise<WaitResult> {
   const start = Date.now();
 
@@ -95,7 +100,7 @@ export async function waitForIdle(
 export async function waitForStableScreen(
   session: TerminalSession,
   stableMs: number,
-  timeoutMs: number
+  timeoutMs: number,
 ): Promise<WaitResult> {
   const start = Date.now();
   let last = await snapshotText(session);
@@ -129,10 +134,7 @@ export async function waitForStableScreen(
 }
 
 /** Resolve when the session's process exits, or report false on timeout. */
-export async function waitForExit(
-  session: TerminalSession,
-  timeoutMs: number
-): Promise<boolean> {
+export async function waitForExit(session: TerminalSession, timeoutMs: number): Promise<boolean> {
   const start = Date.now();
   while (!session.exited) {
     if (Date.now() - start >= timeoutMs) return false;

@@ -89,7 +89,9 @@ export function registerTools(server: McpServer): void {
         command: z
           .string()
           .optional()
-          .describe("Command to run via the user's shell (e.g. 'vim /tmp/a.txt', 'htop'). Omit for an interactive shell."),
+          .describe(
+            "Command to run via the user's shell (e.g. 'vim /tmp/a.txt', 'htop'). Omit for an interactive shell.",
+          ),
         cwd: z.string().optional().describe("Working directory (defaults to the server's cwd)"),
         cols: colsSchema,
         rows: rowsSchema,
@@ -101,9 +103,9 @@ export function registerTools(server: McpServer): void {
       await settle(session, SETTLE.afterCreate);
       const rec = session.recording ? `\nRecording: ${session.recording.path}` : "";
       return ok(
-        `Created session "${session_id}" (pid ${session.pty.pid}).${rec}\n${await screenWithHeader(session_id)}`
+        `Created session "${session_id}" (pid ${session.pty.pid}).${rec}\n${await screenWithHeader(session_id)}`,
       );
-    })
+    }),
   );
 
   let execCounter = 0;
@@ -132,7 +134,9 @@ export function registerTools(server: McpServer): void {
       try {
         if (!(await waitForExit(session, timeout_ms))) {
           const partial = await fullTranscript(session);
-          return fail(`Command still running after ${timeout_ms}ms; killing it.\nPartial output:\n${partial}`);
+          return fail(
+            `Command still running after ${timeout_ms}ms; killing it.\nPartial output:\n${partial}`,
+          );
         }
         // Drain any output that raced with process exit before reading.
         await settle(session, SETTLE.drainAfterExit);
@@ -140,7 +144,7 @@ export function registerTools(server: McpServer): void {
       } finally {
         await killSession(id);
       }
-    })
+    }),
   );
 
   server.registerTool(
@@ -160,14 +164,16 @@ export function registerTools(server: McpServer): void {
           .min(0)
           .max(SCROLLBACK)
           .default(0)
-          .describe("Also include up to this many lines that scrolled off the top of the screen ('text' format only)"),
+          .describe(
+            "Also include up to this many lines that scrolled off the top of the screen ('text' format only)",
+          ),
       },
     },
     safe(async ({ session_id, format, scrollback_lines }) => {
       const session = getSession(session_id);
       if (format === "raw") return ok(`${statusHeader(session)}\n${await snapshotRaw(session)}`);
       return ok(await screenWithHeader(session_id, scrollback_lines));
-    })
+    }),
   );
 
   server.registerTool(
@@ -183,14 +189,17 @@ export function registerTools(server: McpServer): void {
       inputSchema: {
         session_id: sessionId,
         input: z.string().default("").describe("Literal text to type (no newline appended)"),
-        special_keys: z.array(z.string()).default([]).describe("Special keys to send after 'input', in order"),
+        special_keys: z
+          .array(z.string())
+          .default([])
+          .describe("Special keys to send after 'input', in order"),
       },
     },
     safe(async ({ session_id, input, special_keys }) => {
       const session = getSession(session_id);
       if (session.exited) {
         return fail(
-          `Session "${session_id}" has exited (code ${session.exitCode}); cannot write. Screen is still readable via session_read.`
+          `Session "${session_id}" has exited (code ${session.exitCode}); cannot write. Screen is still readable via session_read.`,
         );
       }
       // Encode all keys first so an invalid name fails before any bytes are sent.
@@ -200,7 +209,7 @@ export function registerTools(server: McpServer): void {
       for (const bytes of encoded) writeToSession(session, bytes);
       await settle(session, SETTLE.afterWrite);
       return ok(await screenWithHeader(session_id));
-    })
+    }),
   );
 
   server.registerTool(
@@ -228,7 +237,7 @@ export function registerTools(server: McpServer): void {
       const result = await waitForPattern(session, regex, timeout_ms);
       const text = `${result.message}\n${statusHeader(session)}\n${result.screen}`;
       return result.ok ? ok(text) : fail(text);
-    })
+    }),
   );
 
   server.registerTool(
@@ -262,7 +271,7 @@ export function registerTools(server: McpServer): void {
           : await waitForIdle(session, idle_ms, timeout_ms);
       const text = `${result.message}\n${statusHeader(session)}\n${result.screen}`;
       return result.ok ? ok(text) : fail(text);
-    })
+    }),
   );
 
   server.registerTool(
@@ -276,7 +285,12 @@ export function registerTools(server: McpServer): void {
       inputSchema: {
         session_id: sessionId,
         expected_text: z.string().describe("Substring expected on screen"),
-        exact_row: z.number().int().min(0).optional().describe("Restrict the check to this 0-based visible row"),
+        exact_row: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Restrict the check to this 0-based visible row"),
         exact_col: z
           .number()
           .int()
@@ -289,7 +303,7 @@ export function registerTools(server: McpServer): void {
       const session = getSession(session_id);
       const result = await assertScreen(session, expected_text, exact_row, exact_col);
       return result.ok ? ok(result.message) : fail(result.message);
-    })
+    }),
   );
 
   server.registerTool(
@@ -313,7 +327,7 @@ export function registerTools(server: McpServer): void {
         return fail(`Row ${row} is outside the visible screen (0-${session.term.rows - 1}).`);
       }
       return ok(await snapshotRegion(session, row, col, width, height));
-    })
+    }),
   );
 
   server.registerTool(
@@ -350,7 +364,7 @@ export function registerTools(server: McpServer): void {
       const result = await runTest(parseTest(json, source));
       const report = formatResult(result);
       return result.ok ? ok(report) : fail(report);
-    })
+    }),
   );
 
   server.registerTool(
@@ -367,7 +381,7 @@ export function registerTools(server: McpServer): void {
       resizeSession(session, cols, rows);
       await settle(session, SETTLE.afterResize);
       return ok(`Resized to ${cols}x${rows}.\n${await screenWithHeader(session_id)}`);
-    })
+    }),
   );
 
   server.registerTool(
@@ -386,7 +400,7 @@ export function registerTools(server: McpServer): void {
         return `${s.id}  pid=${s.pty.pid}  ${s.term.cols}x${s.term.rows}  ${state}  ${age}s  ${s.command}`;
       });
       return ok(rows.join("\n"));
-    })
+    }),
   );
 
   server.registerTool(
@@ -400,6 +414,6 @@ export function registerTools(server: McpServer): void {
       const { pid, recordingPath } = await killSession(session_id);
       const rec = recordingPath ? ` Recording: ${recordingPath}` : "";
       return ok(`Session "${session_id}" killed (pid ${pid}).${rec}`);
-    })
+    }),
   );
 }
