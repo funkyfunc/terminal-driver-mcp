@@ -1,0 +1,48 @@
+{
+  "name": "terminal-driver-mcp",
+  "version": "0.1.0",
+  "description": "PTY-backed terminal MCP server: gives AI agents a real terminal with headless emulation for driving and testing TUI applications",
+  "type": "module",
+  "license": "MIT",
+  "author": "funkyfunc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/funkyfunc/terminal-driver-mcp.git"
+  },
+  "homepage": "https://github.com/funkyfunc/terminal-driver-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/funkyfunc/terminal-driver-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "terminal-driver-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "postinstall": "node -e \"try{const fs=require('fs'),p=require('path').join(require('path').dirname(require.resolve('node-pty/package.json')),'prebuilds');for(const d of fs.readdirSync(p)){try{fs.chmodSync(require('path').join(p,d,'spawn-helper'),0o755)}catch{}}}catch{}\"",
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "test": "npm run build && node test/e2e.mjs",
+    "inspector": "npx @modelcontextprotocol/inspector node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/headless": "^6.0.0",
+    "node-pty": "^1.1.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0"
+  }
+}
