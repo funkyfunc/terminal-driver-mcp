@@ -6,17 +6,16 @@
  */
 import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { encodeKey } from "./keys.js";
+import { assertScreen, snapshotText } from "./screen.js";
 import {
   appCursorMode,
-  assertScreen,
   createSession,
   killSession,
-  snapshotText,
-  TerminalSession,
   resizeSession,
+  type TerminalSession,
   writeToSession,
 } from "./session-manager.js";
-import { encodeKey } from "./keys.js";
 import { waitForExit, waitForIdle, waitForPattern, waitForStableScreen } from "./wait.js";
 
 const timeoutMs = z.number().int().min(50).max(600000);
@@ -139,7 +138,13 @@ let runCounter = 0;
 
 export async function runTest(spec: TestSpec): Promise<TestResult> {
   const id = `__test_${++runCounter}`;
-  const session = createSession(id, spec.command, spec.cols, spec.rows, spec.cwd);
+  const session = createSession({
+    id,
+    command: spec.command,
+    cols: spec.cols,
+    rows: spec.rows,
+    cwd: spec.cwd,
+  });
   const steps: StepResult[] = [];
 
   try {

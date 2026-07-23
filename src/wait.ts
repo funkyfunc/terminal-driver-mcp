@@ -4,7 +4,8 @@
  * output quiesces, always returning the final screen so the agent can see
  * what actually happened — including on timeout.
  */
-import { TerminalSession, snapshotText } from "./session-manager.js";
+import { snapshotText } from "./screen.js";
+import type { TerminalSession } from "./session-manager.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
