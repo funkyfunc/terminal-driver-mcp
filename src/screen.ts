@@ -110,6 +110,7 @@ export async function assertScreen(
   row?: number,
   col?: number,
 ): Promise<AssertResult> {
+  await flush(session);
   const lines = (await snapshotText(session)).split("\n");
 
   if (col !== undefined && row === undefined) {
@@ -126,9 +127,12 @@ export async function assertScreen(
     const actual = lines[row];
 
     if (col !== undefined) {
-      // Rows are right-trimmed, so pad the extracted slice: text expected at a
-      // column beyond the row's content correctly compares against spaces.
-      const at = actual.slice(col, col + expected.length).padEnd(expected.length);
+      // Column-accurate extraction: translateToString indexes by terminal
+      // column, so a wide char (CJK/emoji) left of `col` shifts the position
+      // correctly — plain string slicing would be off by one per wide cell.
+      const buf = session.term.buffer.active;
+      const fromCol = buf.getLine(buf.baseY + row)?.translateToString(false, col) ?? "";
+      const at = fromCol.slice(0, expected.length).padEnd(expected.length);
       if (at === expected) {
         return { ok: true, message: `PASS: row ${row}, col ${col} is "${expected}".` };
       }

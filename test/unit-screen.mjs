@@ -4,7 +4,7 @@
 // pre-scroll screen — an agent then waits forever for text that is already
 // visible.
 import xterm from "@xterm/headless";
-import { fullTranscript, snapshotText } from "../dist/screen.js";
+import { assertScreen, fullTranscript, snapshotText } from "../dist/screen.js";
 
 let failures = 0;
 function check(label, cond, detail = "") {
@@ -46,6 +46,17 @@ function makeSession() {
     transcript.includes("line-1") && transcript.includes("FINAL-MARKER"),
     transcript.slice(-200),
   );
+}
+
+// exact_col must be terminal-column accurate: a CJK wide char occupies two
+// columns, so text after it sits at a higher column than its string offset.
+{
+  const session = makeSession();
+  session.term.write("你好end"); // 你,好 are width-2; "end" starts at column 4
+  const atCol4 = await assertScreen(session, "end", 0, 4);
+  check("exact_col accounts for wide chars (end at col 4)", atCol4.ok, atCol4.message);
+  const atCol2 = await assertScreen(session, "end", 0, 2);
+  check("exact_col rejects wrong column for wide chars", !atCol2.ok, atCol2.message);
 }
 
 console.log(failures === 0 ? "\nUNIT TESTS PASSED" : `\n${failures} UNIT FAILURES`);

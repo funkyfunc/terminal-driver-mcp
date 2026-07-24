@@ -109,11 +109,13 @@ Then `/mcp` inside Claude Code to confirm the connection.
 
 ```sh
 npm run dev        # tsc --watch
-npm test           # build + 39-check end-to-end suite (drives real vim)
+npm test           # build + unit + e2e + gauntlet suites
 npm run lint       # biome check
 npm run format     # biome format --write
 npm run inspector  # hand-drive tools in the MCP Inspector UI
 ```
+
+Three test layers: `test/unit-screen.mjs` pins screen-reading invariants (flush-before-read, wide-char columns) fast and deterministically; `test/e2e.mjs` drives every tool over a real stdio MCP connection (including real vim); and `test/gauntlet.mjs` runs an adversarial `torture-tui.mjs` through the server in lockstep — capability probes, byte-split escape sequences, wide characters, an output firehose, a live-redrawing alternate screen, exact keystroke-byte verification (arrows in both cursor modes, CSI-u chords), SIGWINCH, and a slow dialog. The gauntlet is where the hard terminal-compatibility bugs surface.
 
 Git hooks (activated automatically by `npm install` via `core.hooksPath`): pre-commit runs lint + typecheck, pre-push runs the full test suite. CI runs the same on Ubuntu and macOS.
 

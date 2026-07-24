@@ -1,75 +1,17 @@
 // End-to-end test: drives terminal-driver-mcp over stdio JSON-RPC and runs vim + resize scenarios.
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { makeChecker, SERVER, startServer, TEST_DIR } from "./mcp-client.mjs";
 
-const SERVER = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
 const TESTFILE = "/tmp/terminal-driver-mcp-e2e.txt";
 if (existsSync(TESTFILE)) unlinkSync(TESTFILE);
 
-const REC_DIR = join(dirname(fileURLToPath(import.meta.url)), ".recordings-test");
+const REC_DIR = join(TEST_DIR, ".recordings-test");
 rmSync(REC_DIR, { recursive: true, force: true });
-const child = spawn("node", [SERVER], {
-  stdio: ["pipe", "pipe", "pipe"],
-  env: { ...process.env, TERMINAL_DRIVER_MCP_RECORDING_DIR: REC_DIR },
-});
-child.stderr.on("data", () => {});
 
-let nextId = 1;
-const pending = new Map();
-let buf = "";
-child.stdout.on("data", (d) => {
-  buf += d;
-  for (let idx = buf.indexOf("\n"); idx >= 0; idx = buf.indexOf("\n")) {
-    const line = buf.slice(0, idx);
-    buf = buf.slice(idx + 1);
-    if (!line.trim()) continue;
-    const msg = JSON.parse(line);
-    if (msg.id && pending.has(msg.id)) {
-      pending.get(msg.id)(msg);
-      pending.delete(msg.id);
-    }
-  }
-});
-
-function rpc(method, params) {
-  const id = nextId++;
-  return new Promise((resolve) => {
-    pending.set(id, resolve);
-    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-  });
-}
-const notify = (method) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method })}\n`);
-
-async function call(name, args) {
-  const res = await rpc("tools/call", { name, arguments: args });
-  if (res.error) throw new Error(`${name}: protocol error ${JSON.stringify(res.error)}`);
-  const text = res.result.content.map((c) => c.text).join("\n");
-  return { isError: !!res.result.isError, text };
-}
-
-let failures = 0;
-function check(label, cond, detail = "") {
-  console.log(`${cond ? "PASS" : "FAIL"}: ${label}`);
-  if (!cond) {
-    failures++;
-    if (detail)
-      console.log(
-        detail
-          .split("\n")
-          .map((l) => `    ${l}`)
-          .join("\n"),
-      );
-  }
-}
-
-await rpc("initialize", {
-  protocolVersion: "2025-06-18",
-  capabilities: {},
-  clientInfo: { name: "e2e", version: "0" },
-});
-notify("notifications/initialized");
+const { check, summary } = makeChecker();
+const { child, call } = await startServer({ TERMINAL_DRIVER_MCP_RECORDING_DIR: REC_DIR });
 
 // --- vim scenario ---
 let r = await call("session_create", {
@@ -247,7 +189,8 @@ if (recPath) {
     JSON.stringify(cast.slice(1, 5)),
   );
 } else {
-  failures += 2;
+  check("asciicast v2 header", false, "no recording path to inspect");
+  check("asciicast has output and input events", false, "no recording path to inspect");
 }
 
 // --- new: cursor + region + exact_col ---
@@ -366,5 +309,4 @@ try {
   );
 }
 
-console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} FAILURES`);
-process.exit(failures === 0 ? 0 : 1);
+process.exit(summary("E2E"));
