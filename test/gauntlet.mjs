@@ -103,6 +103,9 @@ check("shift+escape arrives as CSI-u <ESC>[27;2u", !r.isError && r.text.includes
 r = await pressAndReport("KEYS-4", "ctrl+r", "KEY4:.+");
 check("ctrl+r arrives as 0x12", !r.isError && r.text.includes("KEY4:{12}"), r.text);
 
+r = await pressAndReport("KEYS-5", "ctrl+]", "KEY5:.+");
+check("ctrl+] arrives as legacy 0x1d (not CSI-u)", !r.isError && r.text.includes("KEY5:{1d}"), r.text);
+
 // --- Stage 6: SIGWINCH ---
 r = await wait("RESIZE-READY", 8000);
 check("resize stage ready at 90x26", !r.isError && r.text.includes("RESIZE-READY 90x26"), r.text);

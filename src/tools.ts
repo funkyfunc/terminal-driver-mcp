@@ -75,6 +75,45 @@ async function screenWithHeader(id: string, scrollbackLines = 0): Promise<string
   return `${statusHeader(session)}\n${screen}`;
 }
 
+// Key names typed into 'input' as literal text (braces or backslash escapes)
+// are almost always a mistaken keypress; return a hint instead of sending them.
+function literalKeyMistake(input: string): string | null {
+  const brace = input.match(
+    /\{(enter|return|tab|esc|escape|space|backspace|delete|up|down|left|right|home|end|page_up|page_down|f\d{1,2}|(?:ctrl|alt|shift)\+[^}]+)\}/i,
+  );
+  if (brace) {
+    return (
+      `'input' contains "${brace[0]}", which would be typed as literal characters. ` +
+      `To press the key, use special_keys: ["${brace[1].toLowerCase()}"]. ` +
+      "If you really want the literal braces on screen, send the text in pieces."
+    );
+  }
+  const escapeSeq = input.match(/\\([rnt])/);
+  if (escapeSeq) {
+    const key = escapeSeq[1] === "t" ? "tab" : "enter";
+    return (
+      `'input' contains the literal escape "${escapeSeq[0]}", which types a backslash and a letter, not a keypress. ` +
+      `To press the key, use special_keys: ["${key}"]. ` +
+      "If you really want a literal backslash, send the text in pieces."
+    );
+  }
+  return null;
+}
+
+// Decode a hex string (whitespace/0x prefixes tolerated) to raw bytes.
+function decodeHex(hex: string): string {
+  const clean = hex.replace(/0x/gi, "").replace(/[\s,]/g, "");
+  if (clean.length === 0) return "";
+  if (clean.length % 2 !== 0 || /[^0-9a-f]/i.test(clean)) {
+    throw new Error(`raw_hex "${hex}" is not valid hex (need an even number of 0-9a-f digits).`);
+  }
+  let out = "";
+  for (let i = 0; i < clean.length; i += 2) {
+    out += String.fromCharCode(Number.parseInt(clean.slice(i, i + 2), 16));
+  }
+  return out;
+}
+
 export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_create",
@@ -183,9 +222,9 @@ export function registerTools(server: McpServer): void {
       description:
         "Send keystrokes to a session: 'input' is written literally, then each entry in 'special_keys' " +
         "(enter, tab, escape, backspace, up/down/left/right, home, end, page_up, page_down, f1-f12, " +
-        "ctrl+<letter>, alt+<char>, shift+tab, space, delete, insert) is sent in order. " +
-        "Waits briefly for output to settle and returns the resulting screen. " +
-        "Note: submitting a command requires special_keys: ['enter'].",
+        "ctrl+<key>, alt+<char>, shift+tab, modifier chords like shift+escape, space, delete, insert) is sent " +
+        "in order, then 'raw_hex' bytes if given. Waits briefly for output to settle and returns the resulting " +
+        "screen. Note: submitting a command requires special_keys: ['enter'].",
       inputSchema: {
         session_id: sessionId,
         input: z.string().default("").describe("Literal text to type (no newline appended)"),
@@ -193,32 +232,34 @@ export function registerTools(server: McpServer): void {
           .array(z.string())
           .default([])
           .describe("Special keys to send after 'input', in order"),
+        raw_hex: z
+          .string()
+          .default("")
+          .describe(
+            "Escape hatch: raw bytes as hex (e.g. '1b5b41' for ESC[A) sent after keys, for sequences no key name covers",
+          ),
       },
     },
-    safe(async ({ session_id, input, special_keys }) => {
+    safe(async ({ session_id, input, special_keys, raw_hex }) => {
       const session = getSession(session_id);
       if (session.exited) {
         return fail(
           `Session "${session_id}" has exited (code ${session.exitCode}); cannot write. Screen is still readable via session_read.`,
         );
       }
-      // A key name wrapped in braces inside 'input' is almost always a mistake
-      // (it would be typed as literal characters); catch it before any bytes go out.
-      const braceKey = input.match(
-        /\{(enter|return|tab|esc|escape|space|backspace|delete|up|down|left|right|home|end|page_up|page_down|f\d{1,2}|(?:ctrl|alt|shift)\+[^}]+)\}/i,
-      );
-      if (braceKey) {
-        return fail(
-          `'input' contains "${braceKey[0]}", which would be typed as literal characters. ` +
-            `To press the key, use special_keys: ["${braceKey[1].toLowerCase()}"]. ` +
-            `If you really want the literal braces on screen, send the text in pieces.`,
-        );
-      }
-      // Encode all keys first so an invalid name fails before any bytes are sent.
+      const mistake = literalKeyMistake(input);
+      if (mistake) return fail(mistake);
+
+      // Encode everything up front so a bad key name or bad hex fails before
+      // any bytes are sent (avoids leaving the terminal half-written).
       const app = appCursorMode(session);
       const encoded = special_keys.map((k) => encodeKey(k, app));
+      const rawBytes = decodeHex(raw_hex);
+
       if (input) writeToSession(session, input);
       for (const bytes of encoded) writeToSession(session, bytes);
+      if (rawBytes) writeToSession(session, rawBytes);
+
       await settle(session, SETTLE.afterWrite);
       return ok(await screenWithHeader(session_id));
     }),

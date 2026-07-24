@@ -148,19 +148,29 @@ r = await call("session_wait", { session_id: "q", pattern: "REPLY:.*:END", timeo
 check("emulator answers DSR cursor query", !r.isError && /<ESC>\[\d+;\d+R/.test(r.text), r.text);
 await call("session_kill", { session_id: "q" });
 
-// --- CSI-u chord encoding (shift+escape) ---
+// --- key encoding round-trips through a raw-mode reader ---
+// The helper hex-encodes the bytes it receives (control chars are invisible
+// on screen otherwise); we assert exact wire encodings.
 const rawEchoScript =
-  'import sys,tty,os; tty.setraw(0); os.write(1,b"RAWREADY"); d=os.read(0,32); ' +
-  'os.write(1,b"GOT:"+d.replace(b"\\x1b",b"<ESC>")+b":DONE")';
-r = await call("session_create", { session_id: "chord", command: `python3 -c '${rawEchoScript}'` });
-r = await call("session_wait", { session_id: "chord", pattern: "RAWREADY", timeout_ms: 5000 });
-check("raw echo helper ready", !r.isError, r.text);
-r = await call("session_write", { session_id: "chord", special_keys: ["shift+escape"] });
-r = await call("session_wait", { session_id: "chord", pattern: "GOT:.*:DONE", timeout_ms: 5000 });
-check("shift+escape sends CSI-u 27;2u", !r.isError && r.text.includes("<ESC>[27;2u"), r.text);
-await call("session_kill", { session_id: "chord" });
+  'import tty,os; tty.setraw(0); os.write(1,b"RAWREADY"); d=os.read(0,32); ' +
+  'os.write(1,b"GOT:"+d.hex().encode()+b":DONE")';
+async function echoKey(label, write, expectHex) {
+  await call("session_create", { session_id: "echo", command: `python3 -c '${rawEchoScript}'` });
+  await call("session_wait", { session_id: "echo", pattern: "RAWREADY", timeout_ms: 5000 });
+  await call("session_write", { session_id: "echo", ...write });
+  const got = await call("session_wait", { session_id: "echo", pattern: "GOT:.*:DONE", timeout_ms: 5000 });
+  check(label, !got.isError && got.text.includes(`GOT:${expectHex}:DONE`), got.text);
+  await call("session_kill", { session_id: "echo" });
+}
 
-// --- brace-literal hint ---
+// shift+escape has no legacy encoding -> CSI-u (ESC[27;2u).
+await echoKey("shift+escape sends CSI-u 27;2u", { special_keys: ["shift+escape"] }, "1b5b32373b3275");
+// ctrl+] DOES have a legacy byte (0x1d) -> must use it, not CSI-u.
+await echoKey("ctrl+] sends legacy 0x1d", { special_keys: ["ctrl+]"] }, "1d");
+// raw_hex escape hatch: send ESC[A (arrow up) as raw bytes.
+await echoKey("raw_hex sends arbitrary bytes", { raw_hex: "1b5b41" }, "1b5b41");
+
+// --- literal-key foot-guns are rejected with a hint ---
 r = await call("session_create", { session_id: "hint", command: "sleep 60" });
 r = await call("session_write", { session_id: "hint", input: "hello{enter}" });
 check(
@@ -168,7 +178,27 @@ check(
   r.isError && r.text.includes('special_keys: ["enter"]'),
   r.text,
 );
+r = await call("session_write", { session_id: "hint", input: "hello\\r" });
+check(
+  "literal \\r in input is rejected with a hint",
+  r.isError && r.text.includes('special_keys: ["enter"]'),
+  r.text,
+);
+r = await call("session_write", { session_id: "hint", raw_hex: "zzzz" });
+check("invalid raw_hex is a clear error", r.isError && r.text.includes("not valid hex"), r.text);
 await call("session_kill", { session_id: "hint" });
+
+// --- wait_idle returns a CURRENT screen (stale-family regression) ---
+// Emit a burst faster than idle_ms, then a final marker and go quiet:
+// wait_idle must wait through the burst and return a screen showing the
+// marker, proving idle resolution flushes the parser (not a stale window).
+r = await call("session_create", {
+  session_id: "idle",
+  command: "for i in 1 2 3 4 5; do printf 'BURST%s ' $i; sleep 0.06; done; printf IDLE-MARKER; sleep 60",
+});
+r = await call("session_wait_idle", { session_id: "idle", idle_ms: 150, timeout_ms: 5000 });
+check("wait_idle returns a flushed, current screen", !r.isError && r.text.includes("IDLE-MARKER"), r.text);
+await call("session_kill", { session_id: "idle" });
 
 // --- new: asciicast recording ---
 r = await call("session_create", { session_id: "rec", command: "echo recorded; sleep 60" });

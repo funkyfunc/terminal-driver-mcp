@@ -150,6 +150,9 @@ W(`KEY3:${show(await readKey())}\r\n`);
 W("KEYS-4 press a key\r\n");
 W(`KEY4:${show(await readKey())}\r\n`);
 
+W("KEYS-5 press a key\r\n");
+W(`KEY5:${show(await readKey())}\r\n`);
+
 // --- Stage 6: SIGWINCH reporting ---
 W(`RESIZE-READY ${process.stdout.columns}x${process.stdout.rows}\r\n`);
 await new Promise((resolve) => {

@@ -90,8 +90,17 @@ export function encodeKey(name: string, appCursorMode: boolean): string {
   if (appCursorMode && key in APP_CURSOR_KEYS) return APP_CURSOR_KEYS[key];
   if (key in CSI_KEYS) return CSI_KEYS[key];
 
-  const ctrl = key.match(/^ctrl\+([a-z])$/);
-  if (ctrl) return String.fromCharCode(ctrl[1].charCodeAt(0) - 96);
+  // Legacy C0 control codes: ctrl + (@ A-Z [ \ ] ^ _) map to 0x00-0x1f via
+  // `& 0x1f`. This covers ctrl+letter AND the symbol chords (ctrl+], ctrl+\)
+  // that every terminal understands — unlike CSI-u, which needs kitty support.
+  const ctrl = key.match(/^ctrl\+(.+)$/);
+  if (ctrl) {
+    if (ctrl[1] === "space") return "\x00"; // ctrl+space = NUL
+    if (ctrl[1].length === 1) {
+      const c = ctrl[1].toUpperCase().charCodeAt(0);
+      if (c >= 0x40 && c <= 0x5f) return String.fromCharCode(c & 0x1f);
+    }
+  }
 
   // alt+<char> is ESC-prefixed on most terminals
   const alt = key.match(/^alt\+(.)$/);

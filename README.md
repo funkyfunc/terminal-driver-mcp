@@ -20,7 +20,7 @@ A PTY-backed terminal MCP server that gives AI agents a **real interactive termi
 | `execute_command(command, cwd?, timeout_ms=30000)` | One-shot: run a command to completion in a fresh PTY, return full output + exit code, auto-cleanup. Kills the process and returns partial output on timeout |
 | `session_create(session_id, command?, cwd?, cols=120, rows=30)` | Spawn a persistent PTY session (command via your shell, or an interactive shell) |
 | `session_read(session_id, format=text\|raw, scrollback_lines=0)` | Snapshot the rendered screen; `scrollback_lines` also returns output that scrolled off the top (long logs) |
-| `session_write(session_id, input?, special_keys[]?)` | Type text and special keys (enter, escape, arrows, ctrl+c, f-keys, …); returns the resulting screen |
+| `session_write(session_id, input?, special_keys[]?, raw_hex?)` | Type text, special keys (enter, escape, arrows, ctrl+c, f-keys, chords, …), and/or arbitrary raw bytes; returns the resulting screen |
 | `session_wait(session_id, pattern, timeout_ms)` | Poll until a regex matches the screen |
 | `session_wait_idle(session_id, idle_ms=80, timeout_ms, mode=silence\|stable_screen)` | Wait until output quiesces (byte silence) or the rendered screen stops changing |
 | `session_assert(session_id, expected_text, exact_row?, exact_col?)` | Pass/fail screen assertion with contextual diff; `exact_col` pins the text to a starting column |
@@ -32,7 +32,9 @@ A PTY-backed terminal MCP server that gives AI agents a **real interactive termi
 
 Every screen header includes the cursor position (`cursor row:col`, 0-based, matching screen row numbering).
 
-Arrow keys are DECCKM-aware: when a full-screen app (vim, less) enables application cursor mode, arrows are sent as SS3 sequences automatically. Modifier chords with no legacy encoding (`shift+escape`, `ctrl+enter`, ...) are sent as CSI-u (fixterms/kitty) sequences.
+Arrow keys are DECCKM-aware: when a full-screen app (vim, less) enables application cursor mode, arrows are sent as SS3 sequences automatically. Control chords use the byte the target understands: `ctrl+<letter>` and symbol chords (`ctrl+]`, `ctrl+\`) send their legacy C0 code (works everywhere), while chords with no legacy encoding (`shift+escape`, `ctrl+enter`, ...) fall back to CSI-u (fixterms/kitty). For anything no key name covers, `raw_hex` sends arbitrary bytes (e.g. `raw_hex: "1b5b41"` for `ESC[A`).
+
+Typing a key name as literal text is a common mistake, so `input` values containing `{enter}`-style names or backslash escapes like `\r` are rejected with a hint pointing at `special_keys`.
 
 The emulator also answers terminal queries (DA1, DSR cursor reports, ...) on the application's behalf, so query-happy TUIs (neovim and friends) behave as they would in a real terminal instead of hanging on a probe.
 

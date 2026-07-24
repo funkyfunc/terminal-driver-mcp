@@ -1,6 +1,6 @@
 {
   "name": "terminal-driver-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "PTY-backed terminal MCP server: gives AI agents a real terminal with headless emulation for driving and testing TUI applications",
   "type": "module",
   "license": "MIT",
@@ -36,7 +36,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
-    "test": "npm run build && node test/unit-screen.mjs && node test/e2e.mjs && node test/gauntlet.mjs",
+    "test": "npm run build && node test/unit-keys.mjs && node test/unit-screen.mjs && node test/e2e.mjs && node test/gauntlet.mjs",
     "inspector": "npx @modelcontextprotocol/inspector node dist/index.js"
   },
   "dependencies": {
