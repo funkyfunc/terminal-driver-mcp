@@ -202,6 +202,18 @@ export function registerTools(server: McpServer): void {
           `Session "${session_id}" has exited (code ${session.exitCode}); cannot write. Screen is still readable via session_read.`,
         );
       }
+      // A key name wrapped in braces inside 'input' is almost always a mistake
+      // (it would be typed as literal characters); catch it before any bytes go out.
+      const braceKey = input.match(
+        /\{(enter|return|tab|esc|escape|space|backspace|delete|up|down|left|right|home|end|page_up|page_down|f\d{1,2}|(?:ctrl|alt|shift)\+[^}]+)\}/i,
+      );
+      if (braceKey) {
+        return fail(
+          `'input' contains "${braceKey[0]}", which would be typed as literal characters. ` +
+            `To press the key, use special_keys: ["${braceKey[1].toLowerCase()}"]. ` +
+            `If you really want the literal braces on screen, send the text in pieces.`,
+        );
+      }
       // Encode all keys first so an invalid name fails before any bytes are sent.
       const app = appCursorMode(session);
       const encoded = special_keys.map((k) => encodeKey(k, app));

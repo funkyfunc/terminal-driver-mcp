@@ -47,8 +47,37 @@ const APP_CURSOR_KEYS: Record<string, string> = {
   end: "\x1bOF",
 };
 
+// Codepoints for CSI-u encoding of named keys (fixterms / kitty keyboard
+// protocol). Used for modifier chords that have no legacy byte sequence.
+const CSI_U_CODES: Record<string, number> = {
+  enter: 13,
+  tab: 9,
+  escape: 27,
+  space: 32,
+  backspace: 127,
+};
+
 export function validKeyNames(): string[] {
-  return [...Object.keys(CSI_KEYS), "ctrl+<letter>", "alt+<char>"];
+  return [...Object.keys(CSI_KEYS), "ctrl+<letter>", "alt+<char>", "<mods>+<key> (CSI-u, e.g. shift+escape)"];
+}
+
+/**
+ * Encode a modifier chord as CSI-u: ESC [ code ; mods u. Chords like
+ * shift+escape or ctrl+enter have no legacy encoding at all, so CSI-u is the
+ * only way to express them; apps speaking the kitty/fixterms protocol decode
+ * it, others would have received nothing either way.
+ */
+function encodeCsiU(mods: string[], base: string): string | undefined {
+  const code = CSI_U_CODES[base] ?? (base.length === 1 ? base.codePointAt(0) : undefined);
+  if (code === undefined) return undefined;
+  let modBits = 0;
+  for (const mod of mods) {
+    if (mod === "shift") modBits |= 1;
+    else if (mod === "alt") modBits |= 2;
+    else if (mod === "ctrl") modBits |= 4;
+    else return undefined;
+  }
+  return `\x1b[${code};${1 + modBits}u`;
 }
 
 /**
@@ -67,6 +96,13 @@ export function encodeKey(name: string, appCursorMode: boolean): string {
   // alt+<char> is ESC-prefixed on most terminals
   const alt = key.match(/^alt\+(.)$/);
   if (alt) return `\x1b${alt[1]}`;
+
+  // Remaining modifier chords (shift+escape, ctrl+enter, ...) via CSI-u.
+  const parts = key.split("+");
+  if (parts.length > 1) {
+    const encoded = encodeCsiU(parts.slice(0, -1), parts[parts.length - 1]);
+    if (encoded !== undefined) return encoded;
+  }
 
   throw new Error(`Unknown special key "${name}". Valid keys: ${validKeyNames().join(", ")}`);
 }

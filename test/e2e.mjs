@@ -195,6 +195,39 @@ r = await call("session_wait_idle", {
 check("stable_screen wait resolves on static screen", !r.isError && r.text.includes("unchanged"), r.text);
 await call("session_kill", { session_id: "st" });
 
+// --- terminal query responses (DSR cursor report) ---
+// A raw-mode reader sends ESC[6n and prints whatever comes back; a real
+// terminal (and now our emulator) answers with ESC[row;colR.
+const dsrScript =
+  'import sys,tty,os; tty.setraw(0); os.write(1,b"\\x1b[6n"); r=os.read(0,32); ' +
+  'os.write(1,b"REPLY:"+r.replace(b"\\x1b",b"<ESC>")+b":END")';
+r = await call("session_create", { session_id: "q", command: `python3 -c '${dsrScript}'` });
+r = await call("session_wait", { session_id: "q", pattern: "REPLY:.*:END", timeout_ms: 5000 });
+check("emulator answers DSR cursor query", !r.isError && /<ESC>\[\d+;\d+R/.test(r.text), r.text);
+await call("session_kill", { session_id: "q" });
+
+// --- CSI-u chord encoding (shift+escape) ---
+const rawEchoScript =
+  'import sys,tty,os; tty.setraw(0); os.write(1,b"RAWREADY"); d=os.read(0,32); ' +
+  'os.write(1,b"GOT:"+d.replace(b"\\x1b",b"<ESC>")+b":DONE")';
+r = await call("session_create", { session_id: "chord", command: `python3 -c '${rawEchoScript}'` });
+r = await call("session_wait", { session_id: "chord", pattern: "RAWREADY", timeout_ms: 5000 });
+check("raw echo helper ready", !r.isError, r.text);
+r = await call("session_write", { session_id: "chord", special_keys: ["shift+escape"] });
+r = await call("session_wait", { session_id: "chord", pattern: "GOT:.*:DONE", timeout_ms: 5000 });
+check("shift+escape sends CSI-u 27;2u", !r.isError && r.text.includes("<ESC>[27;2u"), r.text);
+await call("session_kill", { session_id: "chord" });
+
+// --- brace-literal hint ---
+r = await call("session_create", { session_id: "hint", command: "sleep 60" });
+r = await call("session_write", { session_id: "hint", input: "hello{enter}" });
+check(
+  "literal {enter} in input is rejected with a hint",
+  r.isError && r.text.includes('special_keys: ["enter"]'),
+  r.text,
+);
+await call("session_kill", { session_id: "hint" });
+
 // --- new: asciicast recording ---
 r = await call("session_create", { session_id: "rec", command: "echo recorded; sleep 60" });
 const recPath = (r.text.match(/Recording: (.+\.cast)/) ?? [])[1];

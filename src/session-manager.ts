@@ -123,6 +123,19 @@ export function createSession(options: CreateSessionOptions): TerminalSession {
     session.recording?.event("o", data);
   });
 
+  // The emulator generates responses to terminal queries (DA1, DSR cursor
+  // reports, ...) on its onData event; forward them to the application like a
+  // real terminal would, or query-happy TUIs hang waiting for an answer.
+  term.onData((response) => {
+    if (session.exited) return;
+    try {
+      ptyProcess.write(response);
+    } catch {
+      /* pty already closed */
+    }
+    session.recording?.event("q", response);
+  });
+
   ptyProcess.onExit(({ exitCode }) => {
     session.exited = true;
     session.exitCode = exitCode;

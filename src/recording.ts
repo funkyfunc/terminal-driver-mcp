@@ -12,8 +12,11 @@ import { join } from "node:path";
 export const RECORDING_DIR =
   process.env.TERMINAL_DRIVER_MCP_RECORDING_DIR ?? join(homedir(), ".terminal-driver-mcp", "recordings");
 
-/** "o" = output bytes, "i" = agent input, "r" = resize. */
-export type RecordingEvent = "o" | "i" | "r";
+/**
+ * "o" = output bytes, "i" = agent input, "r" = resize,
+ * "q" = emulator-generated query response (non-standard; players ignore it).
+ */
+export type RecordingEvent = "o" | "i" | "r" | "q";
 
 export class Recording {
   private closed = false;

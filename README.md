@@ -32,7 +32,9 @@ A PTY-backed terminal MCP server that gives AI agents a **real interactive termi
 
 Every screen header includes the cursor position (`cursor row:col`, 0-based, matching screen row numbering).
 
-Arrow keys are DECCKM-aware: when a full-screen app (vim, less) enables application cursor mode, arrows are sent as SS3 sequences automatically.
+Arrow keys are DECCKM-aware: when a full-screen app (vim, less) enables application cursor mode, arrows are sent as SS3 sequences automatically. Modifier chords with no legacy encoding (`shift+escape`, `ctrl+enter`, ...) are sent as CSI-u (fixterms/kitty) sequences.
+
+The emulator also answers terminal queries (DA1, DSR cursor reports, ...) on the application's behalf, so query-happy TUIs (neovim and friends) behave as they would in a real terminal instead of hanging on a probe.
 
 ### Synchronization caveats
 
@@ -42,7 +44,7 @@ When a session's screen header says lines have scrolled off (e.g. after a long b
 
 ## Session recordings
 
-Every persistent session is recorded to an [asciicast v2](https://docs.asciinema.org/manual/asciicast/v2/) file in `~/.terminal-driver-mcp/recordings/` (override with `TERMINAL_DRIVER_MCP_RECORDING_DIR`). Replay any session after the fact with `asciinema play <file>.cast` — full fidelity, including agent keystrokes (as input events) and resizes. The recording path is reported by `session_create` and `session_kill`. Recording is best-effort and never fails a session; `execute_command` runs are not recorded (their full output is already returned).
+Every persistent session is recorded to an [asciicast v2](https://docs.asciinema.org/manual/asciicast/v2/) file in `~/.terminal-driver-mcp/recordings/` (override with `TERMINAL_DRIVER_MCP_RECORDING_DIR`). Replay any session after the fact with `asciinema play <file>.cast` — full fidelity, including agent keystrokes (as input events), resizes, and emulator query responses (non-standard `"q"` events, ignored by players). The recording path is reported by `session_create` and `session_kill`. Recording is best-effort and never fails a session; `execute_command` runs are not recorded (their full output is already returned).
 
 ## Deterministic test replay
 

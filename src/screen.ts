@@ -9,9 +9,13 @@ async function flush(session: TerminalSession): Promise<void> {
   await new Promise<void>((resolve) => session.term.write("", resolve));
 }
 
-/** Buffer rows [startY, endY) as right-trimmed plain text, after a flush. */
-async function bufferLines(session: TerminalSession, startY: number, endY: number): Promise<string[]> {
-  await flush(session);
+/**
+ * Buffer rows [startY, endY) as right-trimmed plain text.
+ * Callers must flush() first AND compute startY/endY only after that flush:
+ * pending output can scroll the buffer (moving baseY) or switch the active
+ * buffer entirely, so a window computed pre-flush describes a stale screen.
+ */
+function bufferLines(session: TerminalSession, startY: number, endY: number): string[] {
   const buf = session.term.buffer.active;
   const lines: string[] = [];
   for (let y = startY; y < endY; y++) {
@@ -25,10 +29,10 @@ async function bufferLines(session: TerminalSession, startY: number, endY: numbe
  * preceded by up to `scrollbackLines` lines that have scrolled off-screen.
  */
 export async function snapshotText(session: TerminalSession, scrollbackLines = 0): Promise<string> {
+  await flush(session);
   const buf = session.term.buffer.active;
   const startY = Math.max(0, buf.baseY - scrollbackLines);
-  const lines = await bufferLines(session, startY, buf.baseY + session.term.rows);
-  return lines.join("\n");
+  return bufferLines(session, startY, buf.baseY + session.term.rows).join("\n");
 }
 
 /**
@@ -36,8 +40,9 @@ export async function snapshotText(session: TerminalSession, scrollbackLines = 0
  * with trailing blank rows trimmed. Used by execute_command.
  */
 export async function fullTranscript(session: TerminalSession): Promise<string> {
+  await flush(session);
   const buf = session.term.buffer.active;
-  const lines = await bufferLines(session, 0, buf.baseY + session.term.rows);
+  const lines = bufferLines(session, 0, buf.baseY + session.term.rows);
   while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   const dropped =
     buf.baseY >= SCROLLBACK
