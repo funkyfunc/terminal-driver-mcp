@@ -1,9 +1,25 @@
 # terminal-driver-mcp
 
+### A real terminal for your AI agent — one it can actually *use*, not just fire commands at.
+
 [![CI](https://github.com/funkyfunc/terminal-driver-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/funkyfunc/terminal-driver-mcp/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/terminal-driver-mcp)](https://www.npmjs.com/package/terminal-driver-mcp)
 
-A PTY-backed terminal MCP server that gives AI agents a **real interactive terminal**: spawn persistent sessions, read a clean text snapshot of the rendered screen, send keystrokes, wait for patterns or idle, and assert screen state — so agents can drive and test stateful TUI applications (vim, htop, gdb, interactive git) the way a human does.
+An MCP server that gives an agent a persistent, PTY-backed terminal with a headless screen it can read, type into, wait on, and assert against — so it can drive `vim`, `htop`, `gdb`, a Python REPL, an SSH prompt, or **the very TUI you're building with it**, exactly the way a human would.
+
+## Why not just let the agent use its built-in terminal?
+
+Because the built-in terminal isn't really a terminal. Coding agents run each command against a **pipe**, fire-and-forget, and hand back the raw bytes. That breaks the moment anything is interactive:
+
+| The built-in terminal | terminal-driver-mcp |
+|---|---|
+| **No TTY** — `vim`, `htop`, `top`, `less` detect a pipe and refuse, degrade, or hang until they're killed | A real pseudo-terminal: apps behave exactly as they do for a human (colors, redraws, `SIGWINCH`) |
+| **Fire-and-forget** — the call returns only when the process *exits*, so it can never answer a password prompt, a `y/n`, an `ssh` 2FA, or a `git rebase -i` | Sessions **persist** across tool calls — type, read, type again; sit in a debugger or REPL for a whole conversation |
+| **Chronological byte stream** — you get a log of ANSI escape codes; where anything landed on screen is unrecoverable | A live **2D screen** you read as clean text — menus, dialogs, cursor position, exact rows and columns |
+| **No way to sync** — the agent guesses when the UI is ready and types blind | `wait` for a pattern or for output to go idle before acting — the Assert-Act-Assert loop |
+| **Can't verify its own TUI work** — the feedback loop bottoms out at "it compiled" | Snapshot, assert, `session_click`, resize, and **record a session into a replayable regression test** |
+
+Keep using the built-in terminal for `npm test` and `git status`. Reach for this the moment the work is **interactive, stateful, full-screen, mouse-driven, or something the agent needs to test rather than just run**.
 
 ## Architecture
 

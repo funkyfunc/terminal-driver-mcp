@@ -1,10 +1,31 @@
 {
   "name": "terminal-driver-mcp",
   "version": "0.5.0",
-  "description": "PTY-backed terminal MCP server: gives AI agents a real terminal with headless emulation for driving and testing TUI applications",
+  "description": "A real interactive terminal for AI agents (MCP). Run and test vim, htop, gdb, REPLs, and any TUI — things the built-in fire-and-forget terminal can't touch.",
   "type": "module",
   "license": "MIT",
   "author": "funkyfunc",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "terminal",
+    "pty",
+    "pseudo-terminal",
+    "tui",
+    "tui-testing",
+    "node-pty",
+    "xterm",
+    "headless-terminal",
+    "ai-agents",
+    "agent-tools",
+    "claude",
+    "llm",
+    "vim",
+    "repl",
+    "automation",
+    "e2e-testing"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/funkyfunc/terminal-driver-mcp.git"
