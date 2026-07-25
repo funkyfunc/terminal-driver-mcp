@@ -6,10 +6,12 @@
  * behave interactively, @xterm/headless mirrors the screen in memory, and
  * tools expose snapshots, keystrokes, and synchronization primitives.
  */
+import { readFileSync, writeFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { runTestFiles } from "./runner.js";
 import { killAll } from "./session-manager.js";
+import { recordingToSkeleton } from "./skeleton.js";
 import { log, registerTools } from "./tools.js";
 
 // CLI mode: `terminal-driver-mcp run <test.json...>` replays test scripts and
@@ -20,11 +22,30 @@ if (process.argv[2] === "run") {
   process.exit(code);
 }
 
+// CLI mode: `terminal-driver-mcp skeleton <in.cast> [out.json]` converts a
+// recording into a run_test JSON draft (stdout, or a file if given).
+if (process.argv[2] === "skeleton") {
+  const [inFile, outFile] = process.argv.slice(3);
+  if (!inFile) {
+    process.stderr.write("Usage: terminal-driver-mcp skeleton <recording.cast> [out.json]\n");
+    process.exit(2);
+  }
+  const spec = await recordingToSkeleton(readFileSync(inFile, "utf8"));
+  const json = `${JSON.stringify(spec, null, 2)}\n`;
+  if (outFile) {
+    writeFileSync(outFile, json);
+    process.stderr.write(`Wrote ${spec.steps.length}-step skeleton to ${outFile}\n`);
+  } else {
+    process.stdout.write(json);
+  }
+  process.exit(0);
+}
+
 // stdout is reserved for MCP protocol traffic; redirect any stray
 // console.log (ours or a dependency's) to stderr.
 console.log = console.error;
 
-const server = new McpServer({ name: "terminal-driver-mcp", version: "0.4.0" });
+const server = new McpServer({ name: "terminal-driver-mcp", version: "0.5.0" });
 registerTools(server);
 
 // Zombie prevention: no PTY child may outlive this server.

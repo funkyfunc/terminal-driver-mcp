@@ -115,3 +115,173 @@ export function encodeKey(name: string, appCursorMode: boolean): string {
 
   throw new Error(`Unknown special key "${name}". Valid keys: ${validKeyNames().join(", ")}`);
 }
+
+/** Encode a hex string (whitespace/0x prefixes tolerated) to raw bytes. */
+export function decodeHex(hex: string): string {
+  const clean = hex.replace(/0x/gi, "").replace(/[\s,]/g, "");
+  if (clean.length === 0) return "";
+  if (clean.length % 2 !== 0 || /[^0-9a-f]/i.test(clean)) {
+    throw new Error(`"${hex}" is not valid hex (need an even number of 0-9a-f digits).`);
+  }
+  let out = "";
+  for (let i = 0; i < clean.length; i += 2) {
+    out += String.fromCharCode(Number.parseInt(clean.slice(i, i + 2), 16));
+  }
+  return out;
+}
+
+/** The byte string as lowercase hex (used to emit raw_hex for unknown input). */
+export function toHex(bytes: string): string {
+  return [...bytes].map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+}
+
+export type InputSegment = { text: string } | { key: string } | { rawHex: string };
+
+// Byte sequence -> key name, inverting the encode tables. Both arrow forms
+// (CSI and SS3) map to the same name; multi-byte sequences are matched
+// longest-first so e.g. "\x1b[15~" (f5) wins over a bare "\x1b" (escape).
+const SEQUENCE_TO_KEY: Array<[string, string]> = [
+  ...Object.entries(CSI_KEYS),
+  ...Object.entries(APP_CURSOR_KEYS),
+]
+  .map(([name, seq]) => [seq, name] as [string, string])
+  .sort((a, b) => b[0].length - a[0].length);
+
+const CSI_U_NAME = new Map(Object.entries(CSI_U_CODES).map(([name, code]) => [code, name]));
+
+function csiUToName(data: string, at: number): { name: string; length: number } | undefined {
+  // ESC [ <code> ; <mods> u
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching the ESC byte is the point of decoding key sequences.
+  const m = /^\x1b\[(\d+);(\d+)u/.exec(data.slice(at));
+  if (!m) return undefined;
+  const code = Number(m[1]);
+  const modBits = Number(m[2]) - 1;
+  const base = CSI_U_NAME.get(code) ?? (code >= 0x20 && code < 0x7f ? String.fromCharCode(code) : undefined);
+  if (base === undefined) return undefined;
+  const mods: string[] = [];
+  if (modBits & 4) mods.push("ctrl");
+  if (modBits & 2) mods.push("alt");
+  if (modBits & 1) mods.push("shift");
+  return { name: [...mods, base].join("+"), length: m[0].length };
+}
+
+function controlByteToName(ch: string): string | undefined {
+  const code = ch.charCodeAt(0);
+  if (code === 0x1b || code >= 0x20) return undefined; // ESC handled as sequence; printable is text
+  if (code === 0) return "ctrl+space";
+  // 0x01-0x1a -> ctrl+a..z; 0x1c-0x1f -> ctrl+\ ] ^ _ ; via 0x40 | code.
+  return `ctrl+${String.fromCharCode(0x40 | code).toLowerCase()}`;
+}
+
+/**
+ * Decode a recorded input byte string back into ordered segments — the inverse
+ * of encodeKey. Printable runs become {text}; recognized sequences/control
+ * bytes become {key}; anything unrecognized becomes {rawHex}. Used to turn a
+ * recording's "i" events into run_test write/keys steps.
+ */
+export function decodeInput(data: string): InputSegment[] {
+  const segments: InputSegment[] = [];
+  let text = "";
+  const flushText = () => {
+    if (text) {
+      segments.push({ text });
+      text = "";
+    }
+  };
+
+  let i = 0;
+  while (i < data.length) {
+    // Longest known multi-byte sequence (arrows, function keys, ...).
+    const seq = SEQUENCE_TO_KEY.find(([s]) => s.length > 1 && data.startsWith(s, i));
+    if (seq) {
+      flushText();
+      segments.push({ key: seq[1] });
+      i += seq[0].length;
+      continue;
+    }
+    // CSI-u chord (shift+escape, ...).
+    if (data.startsWith("\x1b[", i)) {
+      const chord = csiUToName(data, i);
+      if (chord) {
+        flushText();
+        segments.push({ key: chord.name });
+        i += chord.length;
+        continue;
+      }
+    }
+    // An unrecognized escape sequence (e.g. SGR mouse): consume it whole and
+    // preserve the bytes as raw_hex rather than mis-splitting into alt+char.
+    if (data[i] === "\x1b") {
+      const escLen = escapeSequenceLength(data, i);
+      if (escLen > 1) {
+        flushText();
+        segments.push({ rawHex: toHex(data.slice(i, i + escLen)) });
+        i += escLen;
+        continue;
+      }
+    }
+    const ch = data[i];
+    if (ch === "\r") {
+      flushText();
+      segments.push({ key: "enter" });
+      i++;
+    } else if (ch === "\t") {
+      flushText();
+      segments.push({ key: "tab" });
+      i++;
+    } else if (ch === "\x7f") {
+      flushText();
+      segments.push({ key: "backspace" });
+      i++;
+    } else if (ch === "\x1b") {
+      // A lone ESC not starting any sequence: bare escape, or alt+<char>.
+      const next = data[i + 1];
+      if (next && next >= "\x20" && next < "\x7f") {
+        flushText();
+        segments.push({ key: `alt+${next}` });
+        i += 2;
+      } else {
+        flushText();
+        segments.push({ key: "escape" });
+        i++;
+      }
+    } else {
+      const ctrlName = controlByteToName(ch);
+      if (ctrlName) {
+        flushText();
+        segments.push({ key: ctrlName });
+      } else {
+        text += ch;
+      }
+      i++;
+    }
+  }
+  flushText();
+  return segments;
+}
+
+// Length of a full ANSI escape sequence starting at `at`, or 1 if `at` is a
+// lone ESC. Handles CSI (ESC [ ... final), SS3 (ESC O final), and OSC
+// (ESC ] ... BEL|ST). Used to consume unrecognized sequences as raw_hex.
+function escapeSequenceLength(data: string, at: number): number {
+  if (data[at] !== "\x1b" || at + 1 >= data.length) return 1;
+  const kind = data[at + 1];
+  if (kind === "[") {
+    let j = at + 2;
+    while (j < data.length && data[j] >= "\x30" && data[j] <= "\x3f") j++; // params
+    while (j < data.length && data[j] >= "\x20" && data[j] <= "\x2f") j++; // intermediates
+    if (j < data.length && data[j] >= "\x40" && data[j] <= "\x7e") return j - at + 1; // final
+    return 1;
+  }
+  if (kind === "O") {
+    return at + 2 < data.length && data[at + 2] >= "\x40" && data[at + 2] <= "\x7e" ? 3 : 1;
+  }
+  if (kind === "]") {
+    for (let j = at + 2; j < data.length; j++) {
+      if (data[j] === "\x07") return j - at + 1; // BEL terminator
+      if (data[j] === "\x1b" && data[j + 1] === "\\") return j - at + 2; // ST terminator
+    }
+    return 1;
+  }
+  return 1;
+}

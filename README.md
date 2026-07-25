@@ -32,6 +32,7 @@ A PTY-backed terminal MCP server that gives AI agents a **real interactive termi
 | `session_list()` | List sessions with pid/status/age |
 | `session_kill(session_id)` | Terminate and clean up a session |
 | `run_test(file \| test_json)` | Replay a JSON test script deterministically (see below) |
+| `recording_to_test(file, out_file?)` | Convert a session's `.cast` recording into a `run_test` JSON draft |
 
 Every screen header includes the cursor position (`cursor row:col`, 0-based, matching screen row numbering).
 
@@ -80,7 +81,17 @@ or ad-hoc via the `run_test` tool. Example script:
 }
 ```
 
-Step types: `{"wait": "<regex>"}`, `{"idle_ms": N, "mode"?: "silence"|"stable_screen"}`, `{"write": "text", "keys": [...]}`, `{"assert": "text", "row"?, "col"?}`, `{"resize": [cols, rows]}`, `{"sleep_ms": N}`, `{"expect_exit": code}`. Execution stops at the first failing step and the report includes the final screen.
+Step types: `{"wait": "<regex>"}`, `{"idle_ms": N, "mode"?: "silence"|"stable_screen"}`, `{"write": "text", "keys": [...], "raw_hex"?}`, `{"assert": "text", "row"?, "col"?}`, `{"resize": [cols, rows]}`, `{"sleep_ms": N}`, `{"expect_exit": code}`. Execution stops at the first failing step and the report includes the final screen.
+
+### Drive once, get a test
+
+You don't have to write the JSON by hand. Drive a session interactively, then convert its recording into a `run_test` draft:
+
+```sh
+node dist/index.js skeleton ~/.terminal-driver-mcp/recordings/<session>.cast tests/mytest.json
+```
+
+or the `recording_to_test` tool mid-session. Recorded keystrokes become `write`/`keys` steps, pauses become `idle_ms` settles (tighten these into precise `wait:` regexes), and the final screen becomes a suggested `assert`. The output is a runnable skeleton you refine — the fast path from "I just did this by hand" to "this is a regression test."
 
 ## Setup
 

@@ -6,7 +6,7 @@
  */
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { encodeKey } from "./keys.js";
+import { decodeHex, encodeKey } from "./keys.js";
 import { assertScreen, snapshotText } from "./screen.js";
 import {
   appCursorMode,
@@ -30,10 +30,14 @@ const StepSchema = z.union([
     })
     .strict(),
   z
-    .object({ write: z.string().default(""), keys: z.array(z.string()).default([]) })
+    .object({
+      write: z.string().default(""),
+      keys: z.array(z.string()).default([]),
+      raw_hex: z.string().default(""),
+    })
     .strict()
-    .refine((s) => s.write !== "" || s.keys.length > 0, {
-      message: "write step needs 'write' text or 'keys'",
+    .refine((s) => s.write !== "" || s.keys.length > 0 || s.raw_hex !== "", {
+      message: "write step needs 'write' text, 'keys', or 'raw_hex'",
     }),
   z
     .object({
@@ -61,6 +65,8 @@ export const TestSchema = z
   .strict();
 
 export type TestSpec = z.infer<typeof TestSchema>;
+/** The pre-validation shape (schema defaults not yet applied) — for emitting clean skeletons. */
+export type TestDraft = z.input<typeof TestSchema>;
 type Step = z.infer<typeof StepSchema>;
 
 export interface StepResult {
@@ -89,7 +95,8 @@ function describeStep(step: Step): string {
   if ("sleep_ms" in step) return `sleep ${step.sleep_ms}ms`;
   if ("expect_exit" in step) return `expect exit ${step.expect_exit}`;
   const keys = step.keys.length ? ` + [${step.keys.join(", ")}]` : "";
-  return `write ${JSON.stringify(step.write)}${keys}`;
+  const raw = step.raw_hex ? ` + raw_hex ${step.raw_hex}` : "";
+  return `write ${JSON.stringify(step.write)}${keys}${raw}`;
 }
 
 async function runStep(session: TerminalSession, step: Step): Promise<{ ok: boolean; detail: string }> {
@@ -134,8 +141,10 @@ async function runStep(session: TerminalSession, step: Step): Promise<{ ok: bool
   }
   const app = appCursorMode(session);
   const encoded = step.keys.map((k) => encodeKey(k, app));
+  const rawBytes = step.raw_hex ? decodeHex(step.raw_hex) : "";
   if (step.write) writeToSession(session, step.write);
   for (const bytes of encoded) writeToSession(session, bytes);
+  if (rawBytes) writeToSession(session, rawBytes);
   await waitForIdle(session, 80, 2000);
   return { ok: true, detail: "written" };
 }

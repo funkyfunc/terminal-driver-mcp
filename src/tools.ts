@@ -4,10 +4,10 @@
  * returns text content — never a thrown error — so agents always get a
  * readable result, including the current screen wherever that helps.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { encodeKey } from "./keys.js";
+import { decodeHex, encodeKey } from "./keys.js";
 import { encodeClick, encodeDrag, type MouseButton } from "./mouse.js";
 import { formatResult, parseTest, runTest } from "./runner.js";
 import {
@@ -30,6 +30,7 @@ import {
   sessionInfo,
   writeToSession,
 } from "./session-manager.js";
+import { recordingToSkeleton } from "./skeleton.js";
 import { waitForExit, waitForIdle, waitForIdleSince, waitForPattern, waitForStableScreen } from "./wait.js";
 
 /** stderr-only logger; stdout is reserved for MCP protocol traffic. */
@@ -105,20 +106,6 @@ function literalKeyMistake(input: string): string | null {
     );
   }
   return null;
-}
-
-// Decode a hex string (whitespace/0x prefixes tolerated) to raw bytes.
-function decodeHex(hex: string): string {
-  const clean = hex.replace(/0x/gi, "").replace(/[\s,]/g, "");
-  if (clean.length === 0) return "";
-  if (clean.length % 2 !== 0 || /[^0-9a-f]/i.test(clean)) {
-    throw new Error(`raw_hex "${hex}" is not valid hex (need an even number of 0-9a-f digits).`);
-  }
-  let out = "";
-  for (let i = 0; i < clean.length; i += 2) {
-    out += String.fromCharCode(Number.parseInt(clean.slice(i, i + 2), 16));
-  }
-  return out;
 }
 
 export function registerTools(server: McpServer): void {
@@ -456,6 +443,31 @@ export function registerTools(server: McpServer): void {
       const result = await runTest(parseTest(json, source));
       const report = formatResult(result);
       return result.ok ? ok(report) : fail(report);
+    }),
+  );
+
+  server.registerTool(
+    "recording_to_test",
+    {
+      title: "Convert a recording into a test skeleton",
+      description:
+        "Turn a session's asciicast (.cast) recording into a run_test JSON draft — the 'drive it once by " +
+        "hand, get a regression test' workflow. Recorded keystrokes become write/keys steps, pauses become " +
+        "idle_ms settles (tighten these into 'wait' regexes), and the final screen becomes a suggested assert. " +
+        "Returns the JSON (or writes it to out_file). Recording paths are reported by session_create/session_kill.",
+      inputSchema: {
+        file: z.string().describe("Path to a .cast recording"),
+        out_file: z.string().optional().describe("Write the JSON here instead of returning it"),
+      },
+    },
+    safe(async ({ file, out_file }) => {
+      const spec = await recordingToSkeleton(readFileSync(file, "utf8"));
+      const json = JSON.stringify(spec, null, 2);
+      if (out_file) {
+        writeFileSync(out_file, `${json}\n`);
+        return ok(`Wrote a ${spec.steps.length}-step test skeleton to ${out_file}.`);
+      }
+      return ok(json);
     }),
   );
 

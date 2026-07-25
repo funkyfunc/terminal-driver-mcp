@@ -266,6 +266,33 @@ r = await call("session_wait", { session_id: "mouse", pattern: "GOT:.*:DONE", ti
 check("mouse click sends SGR press sequence", !r.isError && r.text.includes("1b5b3c303b363b334d"), r.text);
 await call("session_kill", { session_id: "mouse" });
 
+// --- record -> skeleton -> replay round-trip (feature #5) ---
+// Drive a `cat` session (deterministic echo), convert its recording into a
+// run_test skeleton, and replay it — the full "drive once, get a test" loop.
+r = await call("session_create", { session_id: "rt", command: "cat" });
+const rtRecording = (r.text.match(/Recording: (.+\.cast)/) ?? [])[1];
+check("round-trip: recording path reported", !!rtRecording, r.text);
+await call("session_write", { session_id: "rt", input: "ROUNDTRIP-MARKER", special_keys: ["enter"] });
+await call("session_wait", { session_id: "rt", pattern: "ROUNDTRIP-MARKER", timeout_ms: 5000 });
+await call("session_kill", { session_id: "rt" });
+
+r = await call("recording_to_test", { file: rtRecording });
+check("round-trip: conversion returns JSON", !r.isError, r.text);
+let skeleton = null;
+try {
+  skeleton = JSON.parse(r.text);
+} catch {
+  /* leave null */
+}
+check("round-trip: skeleton is valid JSON with steps", !!skeleton?.steps?.length, r.text);
+check(
+  "round-trip: skeleton captured the typed marker",
+  skeleton?.steps?.some((s) => s.write?.includes("ROUNDTRIP-MARKER")),
+  r.text,
+);
+r = await call("run_test", { test_json: JSON.stringify(skeleton) });
+check("round-trip: generated skeleton replays GREEN", !r.isError && r.text.startsWith("PASS"), r.text);
+
 // --- wait_idle returns a CURRENT screen (stale-family regression) ---
 // Emit a burst faster than idle_ms, then a final marker and go quiet:
 // wait_idle must wait through the burst and return a screen showing the
