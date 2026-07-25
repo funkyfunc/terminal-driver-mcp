@@ -1,6 +1,6 @@
 {
   "name": "terminal-driver-mcp",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "A real interactive terminal for AI agents (MCP). Run and test vim, htop, gdb, REPLs, and any TUI — things the built-in fire-and-forget terminal can't touch.",
   "type": "module",
   "license": "MIT",

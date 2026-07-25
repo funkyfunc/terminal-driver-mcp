@@ -306,6 +306,22 @@ r = await call("session_wait_idle", { session_id: "idle", idle_ms: 150, timeout_
 check("wait_idle returns a flushed, current screen", !r.isError && r.text.includes("IDLE-MARKER"), r.text);
 await call("session_kill", { session_id: "idle" });
 
+// --- resilience: many concurrent heavy sessions don't take the server down ---
+// Mimics a multiplexer-style load (several sessions streaming at once). All
+// must stay alive and the server must keep responding.
+for (let i = 0; i < 4; i++) {
+  await call("session_create", { session_id: `load${i}`, command: "yes ABCDEFGH | head -50000; sleep 60" });
+}
+for (let i = 0; i < 4; i++)
+  await call("session_wait_idle", { session_id: `load${i}`, idle_ms: 120, timeout_ms: 8000 });
+r = await call("session_list", {});
+const allAlive = [0, 1, 2, 3].every((i) => new RegExp(`load${i}\\s+pid=\\d+.*running`).test(r.text));
+check("server survives concurrent heavy sessions", !r.isError && allAlive, r.text);
+// And it still answers a fresh request afterwards.
+r = await call("execute_command", { command: "echo STILL-RESPONSIVE" });
+check("server still responsive after load", !r.isError && r.text.includes("STILL-RESPONSIVE"), r.text);
+for (let i = 0; i < 4; i++) await call("session_kill", { session_id: `load${i}` });
+
 // --- new: asciicast recording ---
 r = await call("session_create", { session_id: "rec", command: "echo recorded; sleep 60" });
 const recPath = (r.text.match(/Recording: (.+\.cast)/) ?? [])[1];

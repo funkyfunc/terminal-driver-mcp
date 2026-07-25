@@ -45,22 +45,34 @@ if (process.argv[2] === "skeleton") {
 // console.log (ours or a dependency's) to stderr.
 console.log = console.error;
 
-const server = new McpServer({ name: "terminal-driver-mcp", version: "0.5.1" });
+const server = new McpServer({ name: "terminal-driver-mcp", version: "0.5.2" });
 registerTools(server);
 
-// Zombie prevention: no PTY child may outlive this server.
-process.on("exit", () => killAll());
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-  process.once(signal, () => {
-    killAll();
-    process.exit(0);
-  });
-}
-// The MCP client (e.g. Claude Code) closing stdin means we are orphaned.
-process.stdin.on("close", () => {
+// A stray error in an async path (e.g. an odd escape sequence from a
+// multiplexer) must not crash the whole server and take every live session
+// with it. Log loudly — silent crashes are what made past restarts look
+// "random" — and keep serving; a genuinely broken single operation still
+// surfaces through its own tool result.
+process.on("uncaughtException", (err) => log("UNCAUGHT EXCEPTION (server kept alive):", err));
+process.on("unhandledRejection", (reason) => log("UNHANDLED REJECTION (server kept alive):", reason));
+
+// Deliberate teardown: kill every PTY child (no zombies) and say what
+// triggered it, so a shutdown is never a mystery.
+let shuttingDown = false;
+function shutdown(reason: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log(`shutting down (${reason}); killing active sessions`);
   killAll();
   process.exit(0);
-});
+}
+
+process.on("exit", () => killAll()); // last-resort synchronous sweep
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.once(signal, () => shutdown(signal));
+}
+// The MCP client (e.g. Claude Code) closing stdin means we are orphaned.
+process.stdin.on("close", () => shutdown("stdin closed (client disconnected)"));
 
 await server.connect(new StdioServerTransport());
 log("terminal-driver-mcp connected via stdio");

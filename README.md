@@ -29,6 +29,8 @@ Keep using the built-in terminal for `npm test` and `git status`. Reach for this
 - Sessions live in an in-memory registry and persist across tool calls; PTY children are hard-killed on server exit — no zombies.
 - Local-first: stdio transport only, zero network access.
 
+**Session lifetime:** sessions are in-memory and last as long as the server process. They survive tool calls and child-process exit (the final screen stays readable), but **not** a restart of the MCP server itself — if the client relaunches it, or it is killed, all PTYs go with it. Stray async errors no longer trigger this: the server logs and keeps serving instead of crashing, and every deliberate shutdown logs its cause (signal, client disconnect) to stderr.
+
 ## Tools
 
 | Tool | Purpose |

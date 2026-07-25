@@ -119,7 +119,13 @@ export function createSession(options: CreateSessionOptions): TerminalSession {
 
   ptyProcess.onData((data) => {
     session.lastDataAt = Date.now();
-    term.write(data);
+    // Contain any parser hiccup to this chunk: a single odd byte sequence must
+    // not throw out of the async callback and risk taking the server down.
+    try {
+      term.write(data);
+    } catch (err) {
+      console.error(`[terminal-driver-mcp] emulator write error in session "${id}":`, err);
+    }
     session.recording?.event("o", data);
   });
 
