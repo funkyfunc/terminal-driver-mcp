@@ -294,14 +294,15 @@ r = await call("run_test", { test_json: JSON.stringify(skeleton) });
 check("round-trip: generated skeleton replays GREEN", !r.isError && r.text.startsWith("PASS"), r.text);
 
 // --- wait_idle returns a CURRENT screen (stale-family regression) ---
-// Emit a burst faster than idle_ms, then a final marker and go quiet:
-// wait_idle must wait through the burst and return a screen showing the
-// marker, proving idle resolution flushes the parser (not a stale window).
+// A continuous output flood (no sleeps -> no false idle gaps even under CI
+// load) ending in a marker, then quiet. wait_idle must wait through the flood
+// and return a screen showing the marker, proving idle resolution flushes the
+// parser rather than returning a stale window.
 r = await call("session_create", {
   session_id: "idle",
-  command: "for i in 1 2 3 4 5; do printf 'BURST%s ' $i; sleep 0.06; done; printf IDLE-MARKER; sleep 60",
+  command: "seq 1 20000; printf 'IDLE-MARKER\\n'; sleep 60",
 });
-r = await call("session_wait_idle", { session_id: "idle", idle_ms: 150, timeout_ms: 5000 });
+r = await call("session_wait_idle", { session_id: "idle", idle_ms: 150, timeout_ms: 10000 });
 check("wait_idle returns a flushed, current screen", !r.isError && r.text.includes("IDLE-MARKER"), r.text);
 await call("session_kill", { session_id: "idle" });
 
