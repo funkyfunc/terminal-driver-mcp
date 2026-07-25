@@ -133,6 +133,27 @@ export async function waitForStableScreen(
   }
 }
 
+/**
+ * Wait until output has been quiet for idleMs, measured from no earlier than
+ * `since`. Unlike waitForIdle, this always waits at least idleMs even when no
+ * output has arrived yet — e.g. an echo still in flight from input just
+ * written — so it reliably holds for the app to ingest and render that input.
+ */
+export async function waitForIdleSince(
+  session: TerminalSession,
+  since: number,
+  idleMs: number,
+  timeoutMs: number,
+): Promise<void> {
+  const start = Date.now();
+  for (;;) {
+    const quietFor = Date.now() - Math.max(session.lastDataAt, since);
+    if (session.exited || quietFor >= idleMs) return;
+    if (Date.now() - start >= timeoutMs) return;
+    await sleep(25);
+  }
+}
+
 /** Resolve when the session's process exits, or report false on timeout. */
 export async function waitForExit(session: TerminalSession, timeoutMs: number): Promise<boolean> {
   const start = Date.now();

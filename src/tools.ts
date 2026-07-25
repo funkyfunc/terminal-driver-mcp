@@ -27,7 +27,7 @@ import {
   SCROLLBACK,
   writeToSession,
 } from "./session-manager.js";
-import { waitForExit, waitForIdle, waitForPattern, waitForStableScreen } from "./wait.js";
+import { waitForExit, waitForIdle, waitForIdleSince, waitForPattern, waitForStableScreen } from "./wait.js";
 
 /** stderr-only logger; stdout is reserved for MCP protocol traffic. */
 export const log = (...args: unknown[]) => console.error("[terminal-driver-mcp]", ...args);
@@ -57,6 +57,10 @@ const SETTLE = {
   afterWrite: { idleMs: 80, timeoutMs: 2000 },
   afterResize: { idleMs: 100, timeoutMs: 3000 },
   drainAfterExit: { idleMs: 50, timeoutMs: 1000 },
+  // Between input text and trailing keys: let the app finish ingesting a
+  // large paste before a submit key lands, or the key can be processed
+  // against half-applied text (a stray newline mid-text).
+  betweenInputAndKeys: { idleMs: 60, timeoutMs: 2000 },
 } as const;
 
 type Settle = (typeof SETTLE)[keyof typeof SETTLE];
@@ -223,8 +227,9 @@ export function registerTools(server: McpServer): void {
         "Send keystrokes to a session: 'input' is written literally, then each entry in 'special_keys' " +
         "(enter, tab, escape, backspace, up/down/left/right, home, end, page_up, page_down, f1-f12, " +
         "ctrl+<key>, alt+<char>, shift+tab, modifier chords like shift+escape, space, delete, insert) is sent " +
-        "in order, then 'raw_hex' bytes if given. Waits briefly for output to settle and returns the resulting " +
-        "screen. Note: submitting a command requires special_keys: ['enter'].",
+        "in order, then 'raw_hex' bytes if given. Keys are held until the app finishes rendering 'input', so a " +
+        "trailing Enter always submits the complete text. Returns the resulting screen. " +
+        "Note: submitting a command requires special_keys: ['enter'].",
       inputSchema: {
         session_id: sessionId,
         input: z.string().default("").describe("Literal text to type (no newline appended)"),
@@ -256,7 +261,17 @@ export function registerTools(server: McpServer): void {
       const encoded = special_keys.map((k) => encodeKey(k, app));
       const rawBytes = decodeHex(raw_hex);
 
-      if (input) writeToSession(session, input);
+      if (input) {
+        const writtenAt = Date.now();
+        writeToSession(session, input);
+        // Let the app finish rendering the input before trailing keys land, so
+        // a submit key (Enter) can't be processed against half-applied text.
+        // Measured from the write, not last output, so an in-flight echo counts.
+        if (encoded.length > 0 || rawBytes) {
+          const { idleMs, timeoutMs } = SETTLE.betweenInputAndKeys;
+          await waitForIdleSince(session, writtenAt, idleMs, timeoutMs);
+        }
+      }
       for (const bytes of encoded) writeToSession(session, bytes);
       if (rawBytes) writeToSession(session, rawBytes);
 

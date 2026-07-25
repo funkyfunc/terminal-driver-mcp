@@ -188,6 +188,24 @@ r = await call("session_write", { session_id: "hint", raw_hex: "zzzz" });
 check("invalid raw_hex is a clear error", r.isError && r.text.includes("not valid hex"), r.text);
 await call("session_kill", { session_id: "hint" });
 
+// --- input/keys ordering: Enter must land after input is fully rendered ---
+// The mock box commits typed chars asynchronously; a submit key sent too
+// early would capture partial text. session_write holds keys until input settles.
+r = await call("session_create", {
+  session_id: "box",
+  command: `node ${join(TEST_DIR, "slow-input-box.mjs")}`,
+});
+await call("session_wait", { session_id: "box", pattern: "BOX-READY", timeout_ms: 5000 });
+const typed = "the quick brown fox jumps over the lazy dog";
+r = await call("session_write", { session_id: "box", input: typed, special_keys: ["enter"] });
+r = await call("session_wait", { session_id: "box", pattern: "SUBMIT:\\[", timeout_ms: 5000 });
+check(
+  "Enter submits the complete input (no mid-text race)",
+  !r.isError && r.text.includes(`SUBMIT:[${typed}]`),
+  r.text,
+);
+await call("session_kill", { session_id: "box" });
+
 // --- wait_idle returns a CURRENT screen (stale-family regression) ---
 // Emit a burst faster than idle_ms, then a final marker and go quiet:
 // wait_idle must wait through the burst and return a screen showing the

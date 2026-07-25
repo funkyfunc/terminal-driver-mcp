@@ -24,7 +24,7 @@ if (process.argv[2] === "run") {
 // console.log (ours or a dependency's) to stderr.
 console.log = console.error;
 
-const server = new McpServer({ name: "terminal-driver-mcp", version: "0.3.0" });
+const server = new McpServer({ name: "terminal-driver-mcp", version: "0.3.1" });
 registerTools(server);
 
 // Zombie prevention: no PTY child may outlive this server.

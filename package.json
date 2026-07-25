@@ -1,6 +1,6 @@
 {
   "name": "terminal-driver-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "PTY-backed terminal MCP server: gives AI agents a real terminal with headless emulation for driving and testing TUI applications",
   "type": "module",
   "license": "MIT",
