@@ -206,6 +206,66 @@ check(
 );
 await call("session_kill", { session_id: "box" });
 
+// --- write-then-expect (atomic write + wait) ---
+r = await call("session_create", { session_id: "we", command: "sh -i" });
+r = await call("session_write", {
+  session_id: "we",
+  input: "echo READY-$((6*7))",
+  special_keys: ["enter"],
+  expect: "READY-42",
+  expect_timeout_ms: 5000,
+});
+check("write-then-expect returns on match in one call", !r.isError && r.text.includes("READY-42"), r.text);
+r = await call("session_write", {
+  session_id: "we",
+  input: "true",
+  special_keys: ["enter"],
+  expect: "NEVER",
+  expect_timeout_ms: 800,
+});
+check("write-then-expect times out with final screen", r.isError && r.text.includes("Timed out"), r.text);
+await call("session_kill", { session_id: "we" });
+
+// --- session_info reports what the app enabled ---
+// A python app that turns on mouse tracking, bracketed paste, and alt screen.
+const modesScript =
+  'import sys,time; sys.stdout.write("\\x1b[?1049h\\x1b[?2004h\\x1b[?1000h\\x1b[?1006h"); sys.stdout.flush(); time.sleep(30)';
+r = await call("session_create", { session_id: "info", command: `python3 -c '${modesScript}'` });
+await call("session_wait_idle", { session_id: "info", idle_ms: 150, timeout_ms: 3000 });
+r = await call("session_info", { session_id: "info" });
+const info = r.isError ? {} : JSON.parse(r.text);
+check("session_info reports alt screen", info.altScreen === true, r.text);
+check("session_info reports bracketed paste", info.modes?.bracketedPaste === true, r.text);
+check("session_info reports mouse tracking enabled", info.modes?.mouseTracking !== "none", r.text);
+
+// --- mouse click round-trips as SGR when the app is listening ---
+// The same session has mouse tracking on; make it echo received bytes.
+r = await call("session_click", { session_id: "info", row: 4, col: 9, button: "left" });
+check("session_click succeeds when mouse tracking is on", !r.isError, r.text);
+await call("session_kill", { session_id: "info" });
+
+// mouse guard: an app with no mouse tracking is rejected helpfully.
+r = await call("session_create", { session_id: "nomouse", command: "sleep 30" });
+r = await call("session_click", { session_id: "nomouse", row: 0, col: 0 });
+check(
+  "session_click errors when app has no mouse tracking",
+  r.isError && r.text.includes("mouse tracking"),
+  r.text,
+);
+await call("session_kill", { session_id: "nomouse" });
+
+// mouse SGR bytes reach a raw reader that enabled SGR mouse mode.
+const mouseEchoScript =
+  'import tty,os,sys; sys.stdout.write("\\x1b[?1000h\\x1b[?1006h"); sys.stdout.flush(); tty.setraw(0); ' +
+  'os.write(1,b"MOUSEREADY"); d=os.read(0,32); os.write(1,b"GOT:"+d.hex().encode()+b":DONE")';
+r = await call("session_create", { session_id: "mouse", command: `python3 -c '${mouseEchoScript}'` });
+await call("session_wait", { session_id: "mouse", pattern: "MOUSEREADY", timeout_ms: 5000 });
+await call("session_click", { session_id: "mouse", row: 2, col: 5, button: "left" });
+r = await call("session_wait", { session_id: "mouse", pattern: "GOT:.*:DONE", timeout_ms: 5000 });
+// SGR press at (row2,col5) = ESC[<0;6;3M = hex 1b5b3c303b363b334d
+check("mouse click sends SGR press sequence", !r.isError && r.text.includes("1b5b3c303b363b334d"), r.text);
+await call("session_kill", { session_id: "mouse" });
+
 // --- wait_idle returns a CURRENT screen (stale-family regression) ---
 // Emit a burst faster than idle_ms, then a final marker and go quiet:
 // wait_idle must wait through the burst and return a screen showing the

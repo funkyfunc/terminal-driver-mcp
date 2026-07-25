@@ -20,7 +20,10 @@ A PTY-backed terminal MCP server that gives AI agents a **real interactive termi
 | `execute_command(command, cwd?, timeout_ms=30000)` | One-shot: run a command to completion in a fresh PTY, return full output + exit code, auto-cleanup. Kills the process and returns partial output on timeout |
 | `session_create(session_id, command?, cwd?, cols=120, rows=30)` | Spawn a persistent PTY session (command via your shell, or an interactive shell) |
 | `session_read(session_id, format=text\|raw, scrollback_lines=0)` | Snapshot the rendered screen; `scrollback_lines` also returns output that scrolled off the top (long logs) |
-| `session_write(session_id, input?, special_keys[]?, raw_hex?)` | Type text, special keys (enter, escape, arrows, ctrl+c, f-keys, chords, …), and/or arbitrary raw bytes; returns the resulting screen |
+| `session_write(session_id, input?, special_keys[]?, raw_hex?, expect?)` | Type text, special keys (enter, escape, arrows, ctrl+c, f-keys, chords, …), and/or raw bytes; with `expect` it also waits for a regex — a write+wait in one call |
+| `session_click(session_id, row, col, button?, count?)` | Send a mouse click (SGR) at a cell — for TUIs with mouse tracking; errors if the app isn't listening |
+| `session_drag(session_id, from_row, from_col, to_row, to_col, button?)` | Mouse drag (press → move → release) for dividers, resize handles, selections |
+| `session_info(session_id)` | Report what the app enabled: mouse tracking, bracketed paste, alt screen, cursor keys/keypad, insert, foreground process, dims |
 | `session_wait(session_id, pattern, timeout_ms)` | Poll until a regex matches the screen |
 | `session_wait_idle(session_id, idle_ms=80, timeout_ms, mode=silence\|stable_screen)` | Wait until output quiesces (byte silence) or the rendered screen stops changing |
 | `session_assert(session_id, expected_text, exact_row?, exact_col?)` | Pass/fail screen assertion with contextual diff; `exact_col` pins the text to a starting column |
@@ -37,6 +40,8 @@ Arrow keys are DECCKM-aware: when a full-screen app (vim, less) enables applicat
 Typing a key name as literal text is a common mistake, so `input` values containing `{enter}`-style names or backslash escapes like `\r` are rejected with a hint pointing at `special_keys`.
 
 The emulator also answers terminal queries (DA1, DSR cursor reports, ...) on the application's behalf, so query-happy TUIs (neovim and friends) behave as they would in a real terminal instead of hanging on a probe.
+
+Mouse events (`session_click`, `session_drag`) are sent as SGR sequences and only when the app has enabled mouse tracking — otherwise the tools return a helpful error rather than injecting stray input. Use `session_info` to see the current tracking mode and other flags.
 
 ### Synchronization caveats
 

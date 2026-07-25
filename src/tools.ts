@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { encodeKey } from "./keys.js";
+import { encodeClick, encodeDrag, type MouseButton } from "./mouse.js";
 import { formatResult, parseTest, runTest } from "./runner.js";
 import {
   assertScreen,
@@ -23,8 +24,10 @@ import {
   getSession,
   killSession,
   listSessions,
+  mouseTrackingMode,
   resizeSession,
   SCROLLBACK,
+  sessionInfo,
   writeToSession,
 } from "./session-manager.js";
 import { waitForExit, waitForIdle, waitForIdleSince, waitForPattern, waitForStableScreen } from "./wait.js";
@@ -228,7 +231,8 @@ export function registerTools(server: McpServer): void {
         "(enter, tab, escape, backspace, up/down/left/right, home, end, page_up, page_down, f1-f12, " +
         "ctrl+<key>, alt+<char>, shift+tab, modifier chords like shift+escape, space, delete, insert) is sent " +
         "in order, then 'raw_hex' bytes if given. Keys are held until the app finishes rendering 'input', so a " +
-        "trailing Enter always submits the complete text. Returns the resulting screen. " +
+        "trailing Enter always submits the complete text. If 'expect' is given, waits for that regex to appear " +
+        "and returns the matching screen (or errors with the final screen on timeout) — a write+wait in one call. " +
         "Note: submitting a command requires special_keys: ['enter'].",
       inputSchema: {
         session_id: sessionId,
@@ -243,9 +247,16 @@ export function registerTools(server: McpServer): void {
           .describe(
             "Escape hatch: raw bytes as hex (e.g. '1b5b41' for ESC[A) sent after keys, for sequences no key name covers",
           ),
+        expect: z
+          .string()
+          .optional()
+          .describe(
+            "If set, wait for this regex on screen after writing, returning the matching (or timeout) screen",
+          ),
+        expect_timeout_ms: z.number().int().min(50).max(120000).default(10000),
       },
     },
-    safe(async ({ session_id, input, special_keys, raw_hex }) => {
+    safe(async ({ session_id, input, special_keys, raw_hex, expect, expect_timeout_ms }) => {
       const session = getSession(session_id);
       if (session.exited) {
         return fail(
@@ -255,11 +266,19 @@ export function registerTools(server: McpServer): void {
       const mistake = literalKeyMistake(input);
       if (mistake) return fail(mistake);
 
-      // Encode everything up front so a bad key name or bad hex fails before
-      // any bytes are sent (avoids leaving the terminal half-written).
+      // Encode everything up front so a bad key name, bad hex, or bad regex
+      // fails before any bytes are sent (avoids leaving the terminal half-written).
       const app = appCursorMode(session);
       const encoded = special_keys.map((k) => encodeKey(k, app));
       const rawBytes = decodeHex(raw_hex);
+      let regex: RegExp | undefined;
+      if (expect !== undefined) {
+        try {
+          regex = new RegExp(expect, "m");
+        } catch (err) {
+          return fail(`Invalid expect regex "${expect}": ${err instanceof Error ? err.message : err}`);
+        }
+      }
 
       if (input) {
         const writtenAt = Date.now();
@@ -275,6 +294,11 @@ export function registerTools(server: McpServer): void {
       for (const bytes of encoded) writeToSession(session, bytes);
       if (rawBytes) writeToSession(session, rawBytes);
 
+      if (regex) {
+        const result = await waitForPattern(session, regex, expect_timeout_ms);
+        const text = `${result.message}\n${statusHeader(session)}\n${result.screen}`;
+        return result.ok ? ok(text) : fail(text);
+      }
       await settle(session, SETTLE.afterWrite);
       return ok(await screenWithHeader(session_id));
     }),
@@ -432,6 +456,88 @@ export function registerTools(server: McpServer): void {
       const result = await runTest(parseTest(json, source));
       const report = formatResult(result);
       return result.ok ? ok(report) : fail(report);
+    }),
+  );
+
+  const buttonSchema = z.enum(["left", "middle", "right"]).default("left");
+
+  // Full-screen mouse apps require tracking mode; warn if the app isn't listening.
+  function mouseGuard(session: ReturnType<typeof getSession>): string | null {
+    if (mouseTrackingMode(session) === "none") {
+      return (
+        "The app has not enabled mouse tracking, so it will not receive mouse events " +
+        "(they would be interpreted as stray input). Check session_info; the app may need focus or a mode that turns on the mouse."
+      );
+    }
+    return null;
+  }
+
+  server.registerTool(
+    "session_click",
+    {
+      title: "Click in the terminal",
+      description:
+        "Send a mouse click at a 0-based (row, col) as SGR mouse sequences — for TUIs that enable mouse " +
+        "tracking (tree/list clicks, buttons, menus). button: left|middle|right; count: 2 for double-click. " +
+        "Errors if the app has not enabled mouse tracking. Returns the resulting screen.",
+      inputSchema: {
+        session_id: sessionId,
+        row: z.number().int().min(0).describe("0-based row (matches session_read)"),
+        col: z.number().int().min(0).describe("0-based column"),
+        button: buttonSchema,
+        count: z.number().int().min(1).max(3).default(1).describe("Click count (2 = double-click)"),
+      },
+    },
+    safe(async ({ session_id, row, col, button, count }) => {
+      const session = getSession(session_id);
+      const blocked = mouseGuard(session);
+      if (blocked) return fail(blocked);
+      writeToSession(session, encodeClick(button as MouseButton, row, col, count));
+      await settle(session, SETTLE.afterWrite);
+      return ok(await screenWithHeader(session_id));
+    }),
+  );
+
+  server.registerTool(
+    "session_drag",
+    {
+      title: "Drag in the terminal",
+      description:
+        "Press at (from_row, from_col), move to (to_row, to_col), and release — SGR mouse drag for pane " +
+        "dividers, resize handles, and selections. All coordinates 0-based. Errors if mouse tracking is off.",
+      inputSchema: {
+        session_id: sessionId,
+        from_row: z.number().int().min(0),
+        from_col: z.number().int().min(0),
+        to_row: z.number().int().min(0),
+        to_col: z.number().int().min(0),
+        button: buttonSchema,
+      },
+    },
+    safe(async ({ session_id, from_row, from_col, to_row, to_col, button }) => {
+      const session = getSession(session_id);
+      const blocked = mouseGuard(session);
+      if (blocked) return fail(blocked);
+      writeToSession(session, encodeDrag(button as MouseButton, from_row, from_col, to_row, to_col));
+      await settle(session, SETTLE.afterWrite);
+      return ok(await screenWithHeader(session_id));
+    }),
+  );
+
+  server.registerTool(
+    "session_info",
+    {
+      title: "Inspect session state",
+      description:
+        "Report what the running app has configured: raw/mode flags (bracketed paste, mouse tracking, " +
+        "application cursor/keypad, insert), alternate screen, cursor position, foreground process, and dims. " +
+        "Use this to understand why input behaves unexpectedly without reverse-engineering it.",
+      inputSchema: { session_id: sessionId },
+    },
+    safe(async ({ session_id }) => {
+      // Flush pending output so mode flags reflect the latest escape sequences.
+      await snapshotText(getSession(session_id));
+      return ok(JSON.stringify(sessionInfo(getSession(session_id)), null, 2));
     }),
   );
 

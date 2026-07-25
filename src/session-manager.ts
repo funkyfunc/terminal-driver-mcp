@@ -160,10 +160,82 @@ export function resizeSession(session: TerminalSession, cols: number, rows: numb
   session.recording?.event("r", `${cols}x${rows}`);
 }
 
+interface TerminalModes {
+  applicationCursorKeysMode?: boolean;
+  applicationKeypadMode?: boolean;
+  bracketedPasteMode?: boolean;
+  insertMode?: boolean;
+  mouseTrackingMode?: "none" | "x10" | "vt200" | "drag" | "any";
+  originMode?: boolean;
+  reverseWraparoundMode?: boolean;
+  sendFocusMode?: boolean;
+  wraparoundMode?: boolean;
+}
+
+function modes(session: TerminalSession): TerminalModes {
+  return (session.term as { modes?: TerminalModes }).modes ?? {};
+}
+
 /** True when the app has enabled DECCKM (application cursor keys). */
 export function appCursorMode(session: TerminalSession): boolean {
-  const modes = (session.term as { modes?: { applicationCursorKeysMode?: boolean } }).modes;
-  return modes?.applicationCursorKeysMode ?? false;
+  return modes(session).applicationCursorKeysMode ?? false;
+}
+
+/** The app's mouse tracking mode; "none" means it is not listening for mouse events. */
+export function mouseTrackingMode(session: TerminalSession): string {
+  return modes(session).mouseTrackingMode ?? "none";
+}
+
+export interface SessionInfo {
+  id: string;
+  pid: number;
+  command: string;
+  foregroundProcess: string;
+  cols: number;
+  rows: number;
+  status: string;
+  ageSeconds: number;
+  cursor: { row: number; col: number };
+  altScreen: boolean;
+  modes: {
+    applicationCursorKeys: boolean;
+    applicationKeypad: boolean;
+    bracketedPaste: boolean;
+    insert: boolean;
+    mouseTracking: string;
+    sendFocus: boolean;
+    originMode: boolean;
+    wraparound: boolean;
+  };
+}
+
+/** Snapshot of what the running app has configured — for debugging behavior. */
+export function sessionInfo(session: TerminalSession): SessionInfo {
+  const m = modes(session);
+  const buf = session.term.buffer.active;
+  return {
+    id: session.id,
+    pid: session.pty.pid,
+    command: session.command,
+    // node-pty tracks the current foreground process name (empty on some platforms).
+    foregroundProcess: session.pty.process ?? "",
+    cols: session.term.cols,
+    rows: session.term.rows,
+    status: session.exited ? `exited(${session.exitCode})` : "running",
+    ageSeconds: Math.round((Date.now() - session.createdAt) / 1000),
+    cursor: { row: buf.cursorY, col: buf.cursorX },
+    altScreen: buf.type === "alternate",
+    modes: {
+      applicationCursorKeys: m.applicationCursorKeysMode ?? false,
+      applicationKeypad: m.applicationKeypadMode ?? false,
+      bracketedPaste: m.bracketedPasteMode ?? false,
+      insert: m.insertMode ?? false,
+      mouseTracking: m.mouseTrackingMode ?? "none",
+      sendFocus: m.sendFocusMode ?? false,
+      originMode: m.originMode ?? false,
+      wraparound: m.wraparoundMode ?? true,
+    },
+  };
 }
 
 export interface KillResult {
