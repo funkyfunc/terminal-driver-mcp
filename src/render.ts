@@ -2,16 +2,21 @@
  * Render a structured cell snapshot to a PNG, so vision-capable models can see
  * the terminal's layout, colors, and box-drawing as pixels rather than
  * flattened text. Builds an SVG grid and rasterizes it with @resvg/resvg-js
- * (prebuilt native bindings — no Chromium). The monospace font is bundled
- * (JetBrains Mono, OFL) so rendering is deterministic across machines/CI.
+ * (prebuilt native bindings — no Chromium). Fonts are bundled (JetBrains Mono
+ * plus Noto Sans Symbols 2 as a glyph fallback, both OFL) so rendering is
+ * deterministic across machines/CI and covers dingbats/symbols TUIs use.
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Resvg } from "@resvg/resvg-js";
 import type { CellRun, CellSnapshot } from "./screen.js";
 
-const FONT_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "assets", "JetBrainsMono-Regular.ttf");
+const ASSETS = join(dirname(fileURLToPath(import.meta.url)), "..", "assets");
 const FONT_FAMILY = "JetBrains Mono";
+// JetBrains Mono for text; Noto Sans Symbols 2 as glyph fallback for dingbats,
+// geometric shapes, and misc symbols JBMono lacks (✳, ⦿, …). resvg falls back
+// per-glyph across all loaded fonts.
+const FONT_FILES = [join(ASSETS, "JetBrainsMono-Regular.ttf"), join(ASSETS, "NotoSansSymbols2-Regular.ttf")];
 
 // Cell metrics at font size 17 (JetBrains Mono advance width ≈ 0.6em).
 const FONT_SIZE = 17;
@@ -113,7 +118,7 @@ function buildSvg(snap: CellSnapshot): string {
 /** Render a cell snapshot to a PNG buffer. */
 export function renderPng(snap: CellSnapshot): Buffer {
   const resvg = new Resvg(buildSvg(snap), {
-    font: { fontFiles: [FONT_PATH], defaultFontFamily: FONT_FAMILY, loadSystemFonts: false },
+    font: { fontFiles: FONT_FILES, defaultFontFamily: FONT_FAMILY, loadSystemFonts: false },
   });
   return resvg.render().asPng();
 }

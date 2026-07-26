@@ -14,7 +14,8 @@ function check(label, cond, detail = "") {
 }
 
 const term = new xterm.Terminal({ cols: 40, rows: 6, scrollback: 1000, allowProposedApi: true });
-await new Promise((r) => term.write("\x1b[31mERROR\x1b[0m \x1b[1mok\x1b[0m box:─┐", r));
+// Includes symbols outside JetBrains Mono (✳ ⦿) to exercise the Noto fallback.
+await new Promise((r) => term.write("\x1b[31mERROR\x1b[0m \x1b[1mok\x1b[0m box:─┐ ✳ ⦿ ●", r));
 const png = renderPng(await snapshotCells({ term }));
 
 check(

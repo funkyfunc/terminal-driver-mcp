@@ -306,6 +306,15 @@ r = await call("session_wait_idle", { session_id: "idle", idle_ms: 150, timeout_
 check("wait_idle returns a flushed, current screen", !r.isError && r.text.includes("IDLE-MARKER"), r.text);
 await call("session_kill", { session_id: "idle" });
 
+// --- shell_integration warns up front when it can't take effect ---
+r = await call("session_create", { session_id: "siwarn", command: "cat", shell_integration: true });
+check(
+  "shell_integration with a command warns at creation",
+  !r.isError && r.text.includes("WARNING") && r.text.includes("interactive shell"),
+  r.text,
+);
+await call("session_kill", { session_id: "siwarn" });
+
 // --- structured cell snapshot (colors/styles/cursor + OSC 8) ---
 r = await call("session_create", {
   session_id: "cells",

@@ -61,6 +61,8 @@ export interface TerminalSession {
   commands: CommandRecord[];
   activeCommand?: ActiveCommand;
   shellIntegration: boolean;
+  /** Why shell integration was requested but not applied (for an up-front warning). */
+  shellIntegrationSkipped?: string;
   /** Resolves once shell-integration hooks are injected and the shell is ready. */
   integrationReady?: Promise<void>;
 }
@@ -199,10 +201,16 @@ export function createSession(options: CreateSessionOptions): TerminalSession {
   });
 
   // OSC 133 shell integration: inject hooks into an interactive shell so it
-  // emits prompt/command/exit markers. Only for shell sessions (no command).
-  if (shellIntegration && !command) {
-    const snippet = shellIntegrationSnippet(shell);
-    if (snippet) {
+  // emits prompt/command/exit markers. Only for interactive shell sessions
+  // (no command) running a supported shell; note why it was skipped otherwise
+  // so session_create can warn up front instead of failing later.
+  if (shellIntegration) {
+    const snippet = command ? undefined : shellIntegrationSnippet(shell);
+    if (command) {
+      session.shellIntegrationSkipped = "it applies only to interactive shell sessions (omit 'command')";
+    } else if (!snippet) {
+      session.shellIntegrationSkipped = `the shell '${shell}' is unsupported (bash or zsh only)`;
+    } else {
       session.shellIntegration = true;
       // ` ` prefix keeps it out of history (ignorespace); `clear` hides it.
       // Injected only once the shell has drawn its first prompt — writing at

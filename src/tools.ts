@@ -162,7 +162,11 @@ export function registerTools(server: McpServer): void {
       // Wait until shell-integration hooks are live so the first command is tracked.
       if (session.integrationReady) await session.integrationReady;
       const rec = session.recording ? `\nRecording: ${session.recording.path}` : "";
-      const si = session.shellIntegration ? "\nShell integration active (OSC 133)." : "";
+      const si = session.shellIntegration
+        ? "\nShell integration active (OSC 133)."
+        : session.shellIntegrationSkipped
+          ? `\nWARNING: shell_integration was requested but not applied — ${session.shellIntegrationSkipped}. session_last_command/session_wait_command will not work.`
+          : "";
       return ok(
         `Created session "${session_id}" (pid ${session.pty.pid}).${rec}${si}\n${await screenWithHeader(session_id)}`,
       );
