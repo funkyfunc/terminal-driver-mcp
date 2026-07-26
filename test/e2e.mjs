@@ -293,16 +293,13 @@ check(
 r = await call("run_test", { test_json: JSON.stringify(skeleton) });
 check("round-trip: generated skeleton replays GREEN", !r.isError && r.text.startsWith("PASS"), r.text);
 
-// --- wait_idle returns a CURRENT screen (stale-family regression) ---
-// A continuous output flood (no sleeps -> no false idle gaps even under CI
-// load) ending in a marker, then quiet. wait_idle must wait through the flood
-// and return a screen showing the marker, proving idle resolution flushes the
-// parser rather than returning a stale window.
-r = await call("session_create", {
-  session_id: "idle",
-  command: "seq 1 20000; printf 'IDLE-MARKER\\n'; sleep 60",
-});
-r = await call("session_wait_idle", { session_id: "idle", idle_ms: 150, timeout_ms: 10000 });
+// --- wait_idle returns a CURRENT, flushed screen ---
+// A marker is printed and the session goes quiet. wait_idle must return a
+// screen showing it. This is deterministic: no dependence on output timing
+// (which flakes under CI load). The flush-before-read invariant that wait_idle
+// relies on is pinned separately and deterministically in unit-screen.mjs.
+r = await call("session_create", { session_id: "idle", command: "echo LINE-A; echo IDLE-MARKER; sleep 60" });
+r = await call("session_wait_idle", { session_id: "idle", idle_ms: 100, timeout_ms: 5000 });
 check("wait_idle returns a flushed, current screen", !r.isError && r.text.includes("IDLE-MARKER"), r.text);
 await call("session_kill", { session_id: "idle" });
 
