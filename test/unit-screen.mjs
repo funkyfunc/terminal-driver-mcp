@@ -4,7 +4,7 @@
 // pre-scroll screen — an agent then waits forever for text that is already
 // visible.
 import xterm from "@xterm/headless";
-import { assertScreen, fullTranscript, snapshotText } from "../dist/screen.js";
+import { assertScreen, fullTranscript, snapshotCells, snapshotText } from "../dist/screen.js";
 
 let failures = 0;
 function check(label, cond, detail = "") {
@@ -57,6 +57,34 @@ function makeSession() {
   check("exact_col accounts for wide chars (end at col 4)", atCol4.ok, atCol4.message);
   const atCol2 = await assertScreen(session, "end", 0, 2);
   check("exact_col rejects wrong column for wide chars", !atCol2.ok, atCol2.message);
+}
+
+// snapshotCells: styled runs coalesce, colors/attrs surface, trailing blanks trimmed.
+{
+  const session = makeSession();
+  await new Promise((r) => session.term.write("\x1b[31mRED\x1b[0m\x1b[1mBOLD\x1b[0m plain", r));
+  const snap = await snapshotCells(session);
+  const runs = snap.lines[0].runs;
+  check(
+    "snapshotCells coalesces the red run",
+    runs[0]?.text === "RED" && !!runs[0]?.fg,
+    JSON.stringify(runs),
+  );
+  check(
+    "snapshotCells captures bold",
+    runs[1]?.text === "BOLD" && runs[1]?.bold === true,
+    JSON.stringify(runs),
+  );
+  check(
+    "snapshotCells right-trims unstyled trailing spaces",
+    runs[runs.length - 1]?.text === " plain",
+    JSON.stringify(runs),
+  );
+  check(
+    "snapshotCells reports cursor",
+    typeof snap.cursor.row === "number" && typeof snap.cursor.col === "number",
+    JSON.stringify(snap.cursor),
+  );
 }
 
 console.log(failures === 0 ? "\nUNIT TESTS PASSED" : `\n${failures} UNIT FAILURES`);

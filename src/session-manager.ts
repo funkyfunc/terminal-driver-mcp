@@ -9,9 +9,42 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import xterm from "@xterm/headless";
 import * as pty from "node-pty";
 import { Recording } from "./recording.js";
+import { shellIntegrationSnippet } from "./shell-integration.js";
 
 const { Terminal } = xterm;
 type Terminal = InstanceType<typeof xterm.Terminal>;
+
+export interface LinkRecord {
+  url: string;
+  startRow: number; // absolute buffer row (baseY + cursorY at the time)
+  startCol: number;
+  endRow: number;
+  endCol: number;
+}
+
+export interface CommandRecord {
+  command: string;
+  exitCode: number | null;
+  output: string;
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
+}
+
+// xterm marker: tracks a buffer line across scrolling, disposes on eviction.
+interface Marker {
+  readonly line: number;
+  readonly isDisposed: boolean;
+  dispose(): void;
+}
+
+// In-progress command being assembled from OSC 133 markers.
+interface ActiveCommand {
+  bMarker?: Marker;
+  bCol: number;
+  cMarker?: Marker;
+  startedAt: number;
+}
 
 export interface TerminalSession {
   id: string;
@@ -24,7 +57,16 @@ export interface TerminalSession {
   command: string;
   createdAt: number;
   recording?: Recording;
+  links: LinkRecord[];
+  commands: CommandRecord[];
+  activeCommand?: ActiveCommand;
+  shellIntegration: boolean;
+  /** Resolves once shell-integration hooks are injected and the shell is ready. */
+  integrationReady?: Promise<void>;
 }
+
+const MAX_LINKS = 200;
+const MAX_COMMANDS = 100;
 
 export const MAX_SESSIONS = 16;
 export const SCROLLBACK = 1000;
@@ -60,10 +102,12 @@ export interface CreateSessionOptions {
   cwd?: string;
   /** Write an asciicast recording of the session. Defaults to true. */
   record?: boolean;
+  /** Inject OSC 133 shell integration (interactive shell sessions only). */
+  shellIntegration?: boolean;
 }
 
 export function createSession(options: CreateSessionOptions): TerminalSession {
-  const { id, command, cols, rows, cwd, record = true } = options;
+  const { id, command, cols, rows, cwd, record = true, shellIntegration = false } = options;
 
   if (sessions.has(id)) {
     throw new Error(`Session "${id}" already exists. Use session_kill first or pick another id.`);
@@ -112,10 +156,15 @@ export function createSession(options: CreateSessionOptions): TerminalSession {
     exitCode: null,
     command: command ?? shell,
     createdAt: Date.now(),
+    links: [],
+    commands: [],
+    shellIntegration: false,
   };
   if (record) {
     session.recording = Recording.open(id, session.command, cols, rows);
   }
+
+  registerOscHandlers(session);
 
   ptyProcess.onData((data) => {
     session.lastDataAt = Date.now();
@@ -149,8 +198,132 @@ export function createSession(options: CreateSessionOptions): TerminalSession {
     session.recording?.close();
   });
 
+  // OSC 133 shell integration: inject hooks into an interactive shell so it
+  // emits prompt/command/exit markers. Only for shell sessions (no command).
+  if (shellIntegration && !command) {
+    const snippet = shellIntegrationSnippet(shell);
+    if (snippet) {
+      session.shellIntegration = true;
+      // ` ` prefix keeps it out of history (ignorespace); `clear` hides it.
+      // Injected only once the shell has drawn its first prompt — writing at
+      // spawn time races the shell's own startup and gets lost/overridden.
+      // Awaitable via integrationReady so callers can wait before sending input.
+      session.integrationReady = injectWhenIdle(session, ` ${snippet}\r clear\r`);
+    }
+  }
+
   sessions.set(id, session);
   return session;
+}
+
+async function injectWhenIdle(session: TerminalSession, data: string): Promise<void> {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (!session.exited && Date.now() - session.lastDataAt >= 150) break; // prompt settled
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  if (session.exited) return;
+  session.pty.write(data);
+  // Let the snippet run and the shell redraw a fresh prompt before returning.
+  const settleBy = Date.now() + 2000;
+  while (Date.now() < settleBy) {
+    if (Date.now() - session.lastDataAt >= 150) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+// OSC handlers run in-stream during parsing, so the emulator cursor reflects
+// the position where the sequence appeared — which is what we record.
+function registerOscHandlers(session: TerminalSession): void {
+  const { term } = session;
+  let pendingLink: { url: string; startRow: number; startCol: number } | null = null;
+
+  // OSC 8 ; params ; URI  — opens a hyperlink; OSC 8 ; ;  closes it.
+  term.parser.registerOscHandler(8, (data: string) => {
+    const buf = term.buffer.active;
+    const uri = data.slice(data.indexOf(";") + 1); // strip params
+    if (uri) {
+      pendingLink = { url: uri, startRow: buf.baseY + buf.cursorY, startCol: buf.cursorX };
+    } else if (pendingLink) {
+      session.links.push({
+        ...pendingLink,
+        endRow: buf.baseY + buf.cursorY,
+        endCol: buf.cursorX,
+      });
+      if (session.links.length > MAX_LINKS) session.links.shift();
+      pendingLink = null;
+    }
+    return false; // let xterm apply its own OSC 8 handling too
+  });
+
+  // OSC 133 ; A|B|C|D[;exit]  — semantic command boundaries (FTCS).
+  term.parser.registerOscHandler(133, (data: string) => {
+    const buf = term.buffer.active;
+    const kind = data[0];
+    const absLine = () => buf.baseY + buf.cursorY;
+    if (kind === "A") {
+      // Prompt starting: any half-built command without output is abandoned.
+      disposeActive(session.activeCommand);
+      session.activeCommand = { bCol: buf.cursorX, startedAt: 0 };
+    } else if (kind === "B") {
+      if (session.activeCommand) {
+        session.activeCommand.bMarker = term.registerMarker(0) ?? undefined;
+        session.activeCommand.bCol = buf.cursorX;
+      }
+    } else if (kind === "C") {
+      if (session.activeCommand) {
+        session.activeCommand.cMarker = term.registerMarker(0) ?? undefined;
+        session.activeCommand.startedAt = Date.now();
+      }
+    } else if (kind === "D") {
+      const active = session.activeCommand;
+      if (active?.cMarker && !active.cMarker.isDisposed) {
+        const parts = data.split(";");
+        const exitCode = parts.length > 1 && parts[1] !== "" ? Number(parts[1]) : null;
+        const endedAt = Date.now();
+        session.commands.push({
+          command: readCommandText(term, active),
+          exitCode: Number.isNaN(exitCode as number) ? null : exitCode,
+          output: readRows(term, active.cMarker.line, absLine()),
+          startedAt: active.startedAt,
+          endedAt,
+          durationMs: active.startedAt ? endedAt - active.startedAt : 0,
+        });
+        if (session.commands.length > MAX_COMMANDS) session.commands.shift();
+      }
+      disposeActive(active);
+      session.activeCommand = undefined;
+    }
+    return true;
+  });
+}
+
+function disposeActive(active?: ActiveCommand): void {
+  active?.bMarker?.dispose();
+  active?.cMarker?.dispose();
+}
+
+/** True while a shell command is executing (OSC 133 C seen, D not yet). */
+export function commandIsRunning(session: TerminalSession): boolean {
+  const c = session.activeCommand?.cMarker;
+  return !!c && !c.isDisposed;
+}
+
+// The typed command: the prompt line from the B column to end (single-line).
+function readCommandText(term: Terminal, active: ActiveCommand): string {
+  if (!active.bMarker || active.bMarker.isDisposed) return "";
+  return term.buffer.active.getLine(active.bMarker.line)?.translateToString(true, active.bCol).trim() ?? "";
+}
+
+// Rows [start, end) as trimmed plain text (a command's output between C and D).
+function readRows(term: Terminal, start: number, end: number): string {
+  const buf = term.buffer.active;
+  const lines: string[] = [];
+  for (let y = Math.max(0, start); y < end; y++) {
+    lines.push(buf.getLine(y)?.translateToString(true) ?? "");
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines.join("\n");
 }
 
 /** Write agent input to the PTY, mirroring it into the recording. */

@@ -9,10 +9,12 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { decodeHex, encodeKey } from "./keys.js";
 import { encodeClick, encodeDrag, type MouseButton } from "./mouse.js";
+import { renderPng } from "./render.js";
 import { formatResult, parseTest, runTest } from "./runner.js";
 import {
   assertScreen,
   fullTranscript,
+  snapshotCells,
   snapshotRaw,
   snapshotRegion,
   snapshotText,
@@ -20,6 +22,7 @@ import {
 } from "./screen.js";
 import {
   appCursorMode,
+  commandIsRunning,
   createSession,
   getSession,
   killSession,
@@ -36,10 +39,18 @@ import { waitForExit, waitForIdle, waitForIdleSince, waitForPattern, waitForStab
 /** stderr-only logger; stdout is reserved for MCP protocol traffic. */
 export const log = (...args: unknown[]) => console.error("[terminal-driver-mcp]", ...args);
 
-type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
+type TextContent = { type: "text"; text: string };
+type ImageContent = { type: "image"; data: string; mimeType: string };
+type ToolResult = { content: (TextContent | ImageContent)[]; isError?: boolean };
 
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
 const fail = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
+const image = (png: Buffer, caption: string): ToolResult => ({
+  content: [
+    { type: "text", text: caption },
+    { type: "image", data: png.toString("base64"), mimeType: "image/png" },
+  ],
+});
 
 /** Wrap a handler so thrown errors become isError results instead of protocol failures. */
 const safe =
@@ -128,15 +139,32 @@ export function registerTools(server: McpServer): void {
         cwd: z.string().optional().describe("Working directory (defaults to the server's cwd)"),
         cols: colsSchema,
         rows: rowsSchema,
+        shell_integration: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Interactive-shell only (bash/zsh): inject OSC 133 hooks so session_last_command/session_wait_command " +
+              "report each command's exact output and exit code",
+          ),
       },
     },
-    safe(async ({ session_id, command, cwd, cols, rows }) => {
-      const session = createSession({ id: session_id, command, cols, rows, cwd });
+    safe(async ({ session_id, command, cwd, cols, rows, shell_integration }) => {
+      const session = createSession({
+        id: session_id,
+        command,
+        cols,
+        rows,
+        cwd,
+        shellIntegration: shell_integration,
+      });
       log(`created session "${session_id}" pid=${session.pty.pid} cmd=${session.command}`);
       await settle(session, SETTLE.afterCreate);
+      // Wait until shell-integration hooks are live so the first command is tracked.
+      if (session.integrationReady) await session.integrationReady;
       const rec = session.recording ? `\nRecording: ${session.recording.path}` : "";
+      const si = session.shellIntegration ? "\nShell integration active (OSC 133)." : "";
       return ok(
-        `Created session "${session_id}" (pid ${session.pty.pid}).${rec}\n${await screenWithHeader(session_id)}`,
+        `Created session "${session_id}" (pid ${session.pty.pid}).${rec}${si}\n${await screenWithHeader(session_id)}`,
       );
     }),
   );
@@ -187,10 +215,12 @@ export function registerTools(server: McpServer): void {
       description:
         "Snapshot the current rendered screen of a session. 'text' returns the plain visual grid " +
         "(spatial layout preserved, ANSI codes stripped); 'raw' includes VT/ANSI sequences for color/style debugging. " +
-        "Output that scrolled off-screen (e.g. long build/test logs) is retrievable via scrollback_lines.",
+        "Output that scrolled off-screen (e.g. long build/test logs) is retrievable via scrollback_lines. " +
+        "format 'json' returns a structured cell model (per-row runs with fg/bg colors and bold/italic/etc. " +
+        "attributes, cursor position, and OSC 8 hyperlink ranges) for reading color/attribute-encoded state.",
       inputSchema: {
         session_id: sessionId,
-        format: z.enum(["text", "raw"]).default("text"),
+        format: z.enum(["text", "raw", "json"]).default("text"),
         scrollback_lines: z
           .number()
           .int()
@@ -198,13 +228,14 @@ export function registerTools(server: McpServer): void {
           .max(SCROLLBACK)
           .default(0)
           .describe(
-            "Also include up to this many lines that scrolled off the top of the screen ('text' format only)",
+            "Also include up to this many lines that scrolled off the top of the screen (text/json only)",
           ),
       },
     },
     safe(async ({ session_id, format, scrollback_lines }) => {
       const session = getSession(session_id);
       if (format === "raw") return ok(`${statusHeader(session)}\n${await snapshotRaw(session)}`);
+      if (format === "json") return ok(JSON.stringify(await snapshotCells(session, scrollback_lines)));
       return ok(await screenWithHeader(session_id, scrollback_lines));
     }),
   );
@@ -410,6 +441,32 @@ export function registerTools(server: McpServer): void {
   );
 
   server.registerTool(
+    "session_screenshot",
+    {
+      title: "Screenshot the terminal as an image",
+      description:
+        "Render the current screen (colors, styles, box-drawing, cursor) to a PNG image and return it. " +
+        "Use when layout or color-encoded state reads better visually than as text — e.g. for a vision-capable " +
+        "model to inspect a dashboard, diff, or full-screen TUI.",
+      inputSchema: {
+        session_id: sessionId,
+        scrollback_lines: z
+          .number()
+          .int()
+          .min(0)
+          .max(SCROLLBACK)
+          .default(0)
+          .describe("Also render this many lines that scrolled off the top of the screen"),
+      },
+    },
+    safe(async ({ session_id, scrollback_lines }) => {
+      const session = getSession(session_id);
+      const png = renderPng(await snapshotCells(session, scrollback_lines));
+      return image(png, `${statusHeader(session)} — ${png.length} byte PNG`);
+    }),
+  );
+
+  server.registerTool(
     "run_test",
     {
       title: "Run deterministic TUI test",
@@ -550,6 +607,86 @@ export function registerTools(server: McpServer): void {
       // Flush pending output so mode flags reflect the latest escape sequences.
       await snapshotText(getSession(session_id));
       return ok(JSON.stringify(sessionInfo(getSession(session_id)), null, 2));
+    }),
+  );
+
+  // Only nudge toward shell_integration when nothing has been captured; if an
+  // app emits OSC 133 on its own, the records exist without our injection.
+  const noCommandsHint = (session: ReturnType<typeof getSession>): string =>
+    session.shellIntegration || session.commands.length > 0
+      ? "No command has completed yet in this session."
+      : "No OSC 133 command boundaries seen. Create the session with shell_integration:true (interactive bash/zsh).";
+
+  server.registerTool(
+    "session_last_command",
+    {
+      title: "Get the last command's result",
+      description:
+        "Return the most recently completed shell command's exact output, exit code, and duration — no screen " +
+        "parsing or guessing. Requires a session created with shell_integration:true. The token-cheap way to " +
+        "check a command: returns just its output, not the whole screen.",
+      inputSchema: { session_id: sessionId },
+    },
+    safe(async ({ session_id }) => {
+      const session = getSession(session_id);
+      await snapshotText(session); // flush so a just-finished command is recorded
+      const last = session.commands[session.commands.length - 1];
+      if (!last) return fail(noCommandsHint(session));
+      return ok(
+        JSON.stringify(
+          {
+            command: last.command,
+            exit_code: last.exitCode,
+            duration_ms: last.durationMs,
+            output: last.output,
+          },
+          null,
+          2,
+        ),
+      );
+    }),
+  );
+
+  server.registerTool(
+    "session_wait_command",
+    {
+      title: "Wait for the running command to finish",
+      description:
+        "Block until the session's current shell command completes (OSC 133), then return its output, exit code, " +
+        "and duration. The reliable alternative to guessing with session_wait_idle for shell commands. " +
+        "Requires shell_integration:true.",
+      inputSchema: {
+        session_id: sessionId,
+        timeout_ms: z.number().int().min(50).max(600000).default(30000),
+      },
+    },
+    safe(async ({ session_id, timeout_ms }) => {
+      const session = getSession(session_id);
+      const deadline = Date.now() + timeout_ms;
+      for (;;) {
+        await snapshotText(session); // flush to let a pending C/D marker land
+        // A command is in-flight once its C marker exists and until D clears it.
+        const running = commandIsRunning(session);
+        if (!running && session.commands.length > 0) {
+          const last = session.commands[session.commands.length - 1];
+          return ok(
+            JSON.stringify(
+              {
+                command: last.command,
+                exit_code: last.exitCode,
+                duration_ms: last.durationMs,
+                output: last.output,
+              },
+              null,
+              2,
+            ),
+          );
+        }
+        if (Date.now() >= deadline) {
+          return fail(`No command completed within ${timeout_ms}ms.\n${await screenWithHeader(session_id)}`);
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
     }),
   );
 

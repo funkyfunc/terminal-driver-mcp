@@ -37,11 +37,14 @@ Keep using the built-in terminal for `npm test` and `git status`. Reach for this
 |---|---|
 | `execute_command(command, cwd?, timeout_ms=30000)` | One-shot: run a command to completion in a fresh PTY, return full output + exit code, auto-cleanup. Kills the process and returns partial output on timeout |
 | `session_create(session_id, command?, cwd?, cols=120, rows=30)` | Spawn a persistent PTY session (command via your shell, or an interactive shell) |
-| `session_read(session_id, format=text\|raw, scrollback_lines=0)` | Snapshot the rendered screen; `scrollback_lines` also returns output that scrolled off the top (long logs) |
+| `session_read(session_id, format=text\|raw\|json, scrollback_lines=0)` | Snapshot the rendered screen; `json` returns a structured cell model (colors, styles, cursor, OSC 8 links); `scrollback_lines` also returns output that scrolled off the top |
+| `session_screenshot(session_id, scrollback_lines=0)` | Render the screen (colors, box-drawing, cursor) to a PNG image for vision models |
 | `session_write(session_id, input?, special_keys[]?, raw_hex?, expect?)` | Type text, special keys (enter, escape, arrows, ctrl+c, f-keys, chords, …), and/or raw bytes; with `expect` it also waits for a regex — a write+wait in one call |
 | `session_click(session_id, row, col, button?, count?)` | Send a mouse click (SGR) at a cell — for TUIs with mouse tracking; errors if the app isn't listening |
 | `session_drag(session_id, from_row, from_col, to_row, to_col, button?)` | Mouse drag (press → move → release) for dividers, resize handles, selections |
 | `session_info(session_id)` | Report what the app enabled: mouse tracking, bracketed paste, alt screen, cursor keys/keypad, insert, foreground process, dims |
+| `session_last_command(session_id)` | The last shell command's exact output, exit code, and duration (needs `shell_integration`) |
+| `session_wait_command(session_id, timeout_ms)` | Block until the running shell command finishes, then return its result (needs `shell_integration`) |
 | `session_wait(session_id, pattern, timeout_ms)` | Poll until a regex matches the screen |
 | `session_wait_idle(session_id, idle_ms=80, timeout_ms, mode=silence\|stable_screen)` | Wait until output quiesces (byte silence) or the rendered screen stops changing |
 | `session_assert(session_id, expected_text, exact_row?, exact_col?)` | Pass/fail screen assertion with contextual diff; `exact_col` pins the text to a starting column |
@@ -67,6 +70,23 @@ Mouse events (`session_click`, `session_drag`) are sent as SGR sequences and onl
 Both `session_wait_idle` modes are best-effort: continuously-animating UIs (spinners, progress bars, htop's periodic redraws) never go quiet, so those calls run to timeout — which still returns the current screen. When you know what you're waiting for, `session_wait` with a pattern is the reliable primitive. `stable_screen` mode helps with apps that emit bytes without visual change (cursor pings, identical redraws).
 
 When a session's screen header says lines have scrolled off (e.g. after a long build), read them back with `session_read(scrollback_lines: N)` — up to 1000 lines are retained.
+
+## Semantic command boundaries (OSC 133)
+
+Create a shell session with `shell_integration: true` (interactive `bash`/`zsh`) and the server injects OSC 133 hooks, so it knows exactly when each command starts and finishes:
+
+```
+session_create(session_id: "sh", shell_integration: true)
+session_write(session_id: "sh", input: "npm test", special_keys: ["enter"])
+session_wait_command(session_id: "sh")   // blocks until npm test finishes
+  → { command: "npm test", exit_code: 1, duration_ms: 8423, output: "…just the test output…" }
+```
+
+No blind waits, no CPU heuristics, no marker collisions — and `session_last_command` returns **only that command's output** instead of the whole screen, which is far cheaper in tokens. In `run_test` scripts, a `{ "command_exit": 0 }` step asserts the last command's exit code. Requires bash ≥ 4.4 or zsh; on shells without support the session still works, just without command tracking.
+
+## Structured & visual snapshots
+
+`session_read(format: "json")` returns a structured cell model — per-row runs with `fg`/`bg` colors and `bold`/`italic`/`underline`/etc. attributes, the cursor position, and any OSC 8 hyperlink ranges — so an agent can assert on color-encoded state (errors red, selection highlighted) that plain text discards. `session_screenshot` renders the same state to a PNG (bundled monospace font, Chromium-free via `@resvg/resvg-js`) for a vision-capable model to inspect layout and color directly.
 
 ## Session recordings
 
@@ -99,7 +119,7 @@ or ad-hoc via the `run_test` tool. Example script:
 }
 ```
 
-Step types: `{"wait": "<regex>"}`, `{"idle_ms": N, "mode"?: "silence"|"stable_screen"}`, `{"write": "text", "keys": [...], "raw_hex"?}`, `{"assert": "text", "row"?, "col"?}`, `{"resize": [cols, rows]}`, `{"sleep_ms": N}`, `{"expect_exit": code}`. Execution stops at the first failing step and the report includes the final screen.
+Step types: `{"wait": "<regex>"}`, `{"idle_ms": N, "mode"?: "silence"|"stable_screen"}`, `{"write": "text", "keys": [...], "raw_hex"?}`, `{"assert": "text", "row"?, "col"?}`, `{"resize": [cols, rows]}`, `{"sleep_ms": N}`, `{"command_exit": N}` (with `"shell_integration": true`), `{"expect_exit": code}`. Execution stops at the first failing step and the report includes the final screen.
 
 ### Drive once, get a test
 

@@ -11,7 +11,7 @@ const REC_DIR = join(TEST_DIR, ".recordings-test");
 rmSync(REC_DIR, { recursive: true, force: true });
 
 const { check, summary } = makeChecker();
-const { child, call } = await startServer({ TERMINAL_DRIVER_MCP_RECORDING_DIR: REC_DIR });
+const { child, call, rpc } = await startServer({ TERMINAL_DRIVER_MCP_RECORDING_DIR: REC_DIR });
 
 // --- vim scenario ---
 let r = await call("session_create", {
@@ -305,6 +305,94 @@ r = await call("session_create", {
 r = await call("session_wait_idle", { session_id: "idle", idle_ms: 150, timeout_ms: 10000 });
 check("wait_idle returns a flushed, current screen", !r.isError && r.text.includes("IDLE-MARKER"), r.text);
 await call("session_kill", { session_id: "idle" });
+
+// --- structured cell snapshot (colors/styles/cursor + OSC 8) ---
+r = await call("session_create", {
+  session_id: "cells",
+  command: String.raw`printf '\033[31mRED\033[0m\033[1mBOLD\033[0m\n'; printf '\033]8;;https://example.com\033\\LINK\033]8;;\033\\\n'; sleep 60`,
+  cols: 80,
+  rows: 8,
+});
+await call("session_wait", { session_id: "cells", pattern: "LINK", timeout_ms: 5000 });
+r = await call("session_read", { session_id: "cells", format: "json" });
+let snap = null;
+try {
+  snap = JSON.parse(r.text);
+} catch {
+  /* leave null */
+}
+check("session_read json parses", !!snap?.lines, r.text);
+check(
+  "json snapshot carries a colored run",
+  snap?.lines?.[0]?.runs?.some((run) => run.text === "RED" && run.fg),
+  r.text,
+);
+check(
+  "json snapshot carries a bold run",
+  snap?.lines?.[0]?.runs?.some((run) => run.bold === true),
+  r.text,
+);
+check(
+  "json snapshot extracts OSC 8 link",
+  snap?.links?.some((l) => l.url === "https://example.com"),
+  r.text,
+);
+
+// --- session_screenshot returns a PNG image content block ---
+const res = await rpc("tools/call", { name: "session_screenshot", arguments: { session_id: "cells" } });
+const img = res.result?.content?.find((c) => c.type === "image");
+check(
+  "session_screenshot returns an image block",
+  !!img && img.mimeType === "image/png",
+  JSON.stringify(res.result?.content?.map((c) => c.type)),
+);
+const pngOk = img && Buffer.from(img.data, "base64").subarray(0, 8).toString("hex") === "89504e470d0a1a0a";
+check(
+  "screenshot image is a valid PNG",
+  !!pngOk,
+  img ? `${Buffer.from(img.data, "base64").length} bytes` : "no image",
+);
+await call("session_kill", { session_id: "cells" });
+
+// --- OSC 133 shell integration (semantic command boundaries) ---
+// Dedicated server with a shell that supports the hooks: zsh everywhere it
+// exists (verified), else bash (Linux CI has bash >= 4.4 with PS0).
+{
+  const shell = existsSync("/bin/zsh") ? "/bin/zsh" : "/bin/bash";
+  const si = await startServer({ SHELL: shell, TERMINAL_DRIVER_MCP_RECORDING_DIR: REC_DIR });
+  const created = await si.call("session_create", { session_id: "si", shell_integration: true });
+  check(
+    "shell integration reported active",
+    !created.isError && created.text.includes("OSC 133"),
+    created.text,
+  );
+
+  await si.call("session_write", { session_id: "si", input: "echo si-marker-42", special_keys: ["enter"] });
+  let cr = await si.call("session_wait_command", { session_id: "si", timeout_ms: 8000 });
+  let cmd = null;
+  try {
+    cmd = JSON.parse(cr.text);
+  } catch {
+    /* leave null */
+  }
+  check(
+    `shell integration (${shell}): captures output + exit 0`,
+    !cr.isError && cmd?.output?.includes("si-marker-42") && cmd?.exit_code === 0,
+    cr.text,
+  );
+
+  await si.call("session_write", { session_id: "si", input: "false", special_keys: ["enter"] });
+  cr = await si.call("session_wait_command", { session_id: "si", timeout_ms: 8000 });
+  try {
+    cmd = JSON.parse(cr.text);
+  } catch {
+    /* leave null */
+  }
+  check(`shell integration (${shell}): captures nonzero exit`, !cr.isError && cmd?.exit_code === 1, cr.text);
+
+  await si.call("session_kill", { session_id: "si" });
+  si.child.kill();
+}
 
 // --- resilience: many concurrent heavy sessions don't take the server down ---
 // Mimics a multiplexer-style load (several sessions streaming at once). All

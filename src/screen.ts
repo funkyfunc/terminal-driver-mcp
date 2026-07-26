@@ -80,6 +80,150 @@ export function scrolledOffLines(session: TerminalSession): number {
   return session.term.buffer.active.baseY;
 }
 
+type CellColor = string | { palette: number };
+
+export interface CellStyle {
+  fg?: CellColor;
+  bg?: CellColor;
+  bold?: boolean;
+  italic?: boolean;
+  dim?: boolean;
+  underline?: boolean;
+  inverse?: boolean;
+  strikethrough?: boolean;
+}
+export interface CellRun extends CellStyle {
+  text: string;
+}
+export interface SnapshotLink {
+  url: string;
+  startRow: number;
+  startCol: number;
+  endRow: number;
+  endCol: number;
+}
+export interface CellSnapshot {
+  cols: number;
+  rows: number;
+  cursor: { row: number; col: number };
+  lines: Array<{ y: number; runs: CellRun[] }>;
+  links?: SnapshotLink[];
+}
+
+// Minimal structural view of an @xterm/headless buffer cell (avoids a hard
+// dependency on the addon's Terminal type, which differs from headless).
+interface BufferCell {
+  getChars(): string;
+  getWidth(): number;
+  getFgColor(): number;
+  getBgColor(): number;
+  isFgRGB(): boolean;
+  isBgRGB(): boolean;
+  isFgDefault(): boolean;
+  isBgDefault(): boolean;
+  isBold(): number;
+  isItalic(): number;
+  isDim(): number;
+  isUnderline(): number;
+  isInverse(): number;
+  isStrikethrough(): number;
+}
+
+function colorOf(cell: BufferCell, kind: "fg" | "bg"): CellColor | undefined {
+  const isDefault = kind === "fg" ? cell.isFgDefault() : cell.isBgDefault();
+  if (isDefault) return undefined;
+  const isRGB = kind === "fg" ? cell.isFgRGB() : cell.isBgRGB();
+  const value = kind === "fg" ? cell.getFgColor() : cell.getBgColor();
+  if (isRGB) return `#${(value & 0xffffff).toString(16).padStart(6, "0")}`;
+  return { palette: value }; // 256-color / 16-color palette index
+}
+
+function styleOf(cell: BufferCell): CellStyle {
+  const style: CellStyle = {};
+  const fg = colorOf(cell, "fg");
+  const bg = colorOf(cell, "bg");
+  if (fg !== undefined) style.fg = fg;
+  if (bg !== undefined) style.bg = bg;
+  if (cell.isBold()) style.bold = true;
+  if (cell.isItalic()) style.italic = true;
+  if (cell.isDim()) style.dim = true;
+  if (cell.isUnderline()) style.underline = true;
+  if (cell.isInverse()) style.inverse = true;
+  if (cell.isStrikethrough()) style.strikethrough = true;
+  return style;
+}
+
+/**
+ * Structured view of the visible screen: per-row runs of styled text (adjacent
+ * same-style cells coalesced), plus cursor and any tracked OSC 8 hyperlinks.
+ * Lets an agent read color/attribute-encoded state that plain text discards.
+ */
+export async function snapshotCells(session: TerminalSession, scrollbackLines = 0): Promise<CellSnapshot> {
+  await flush(session);
+  const term = session.term;
+  const buf = term.buffer.active;
+  const startY = Math.max(0, buf.baseY - scrollbackLines);
+  const endY = buf.baseY + term.rows;
+
+  const lines: CellSnapshot["lines"] = [];
+  for (let y = startY; y < endY; y++) {
+    const line = buf.getLine(y);
+    const runs: CellRun[] = [];
+    let current: CellRun | null = null;
+    let currentKey = "";
+    if (line) {
+      for (let x = 0; x < term.cols; x++) {
+        const cell = line.getCell(x) as unknown as BufferCell | undefined;
+        if (!cell) break;
+        if (cell.getWidth() === 0) continue; // trailing cell of a wide char
+        const chars = cell.getChars() || " ";
+        const style = styleOf(cell);
+        const key = JSON.stringify(style);
+        if (current && key === currentKey) {
+          current.text += chars;
+        } else {
+          current = { text: chars, ...style };
+          currentKey = key;
+          runs.push(current);
+        }
+      }
+    }
+    // Right-trim trailing whitespace from an unstyled final run (a styled run,
+    // e.g. a colored background block, is meaningful and kept).
+    const last = runs[runs.length - 1];
+    if (last && Object.keys(last).length === 1) {
+      last.text = last.text.replace(/\s+$/, "");
+      if (last.text === "") runs.pop();
+    }
+    lines.push({ y: y - buf.baseY, runs });
+  }
+
+  const snapshot: CellSnapshot = {
+    cols: term.cols,
+    rows: term.rows,
+    cursor: { row: buf.cursorY, col: buf.cursorX },
+    lines,
+  };
+  const links = visibleLinks(session, buf.baseY, endY);
+  if (links.length > 0) snapshot.links = links;
+  return snapshot;
+}
+
+// OSC 8 hyperlinks tracked on the session (absolute buffer rows), projected to
+// screen-relative rows and filtered to the visible window.
+function visibleLinks(session: TerminalSession, baseY: number, endY: number): SnapshotLink[] {
+  const links = session.links ?? [];
+  return links
+    .filter((l) => l.endRow >= baseY && l.startRow < endY)
+    .map((l) => ({
+      url: l.url,
+      startRow: l.startRow - baseY,
+      startCol: l.startCol,
+      endRow: l.endRow - baseY,
+      endCol: l.endCol,
+    }));
+}
+
 /** Cursor position, 0-based, relative to the visible screen (row matches session_read output). */
 export function cursorPosition(session: TerminalSession): { row: number; col: number } {
   const buf = session.term.buffer.active;

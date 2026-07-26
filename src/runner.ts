@@ -50,6 +50,7 @@ const StepSchema = z.union([
     .object({ resize: z.tuple([z.number().int().min(20).max(500), z.number().int().min(5).max(200)]) })
     .strict(),
   z.object({ sleep_ms: z.number().int().min(1).max(60000) }).strict(),
+  z.object({ command_exit: z.number().int() }).strict(), // assert last shell command's exit code (needs shell_integration)
   z.object({ expect_exit: z.number().int(), timeout_ms: timeoutMs.default(30000) }).strict(),
 ]);
 
@@ -60,6 +61,7 @@ export const TestSchema = z
     cwd: z.string().optional(),
     cols: z.number().int().min(20).max(500).default(120),
     rows: z.number().int().min(5).max(200).default(30),
+    shell_integration: z.boolean().default(false),
     steps: z.array(StepSchema).min(1),
   })
   .strict();
@@ -93,6 +95,7 @@ function describeStep(step: Step): string {
     }`;
   if ("resize" in step) return `resize ${step.resize[0]}x${step.resize[1]}`;
   if ("sleep_ms" in step) return `sleep ${step.sleep_ms}ms`;
+  if ("command_exit" in step) return `command exit ${step.command_exit}`;
   if ("expect_exit" in step) return `expect exit ${step.expect_exit}`;
   const keys = step.keys.length ? ` + [${step.keys.join(", ")}]` : "";
   const raw = step.raw_hex ? ` + raw_hex ${step.raw_hex}` : "";
@@ -123,6 +126,16 @@ async function runStep(session: TerminalSession, step: Step): Promise<{ ok: bool
   if ("sleep_ms" in step) {
     await new Promise((r) => setTimeout(r, step.sleep_ms));
     return { ok: true, detail: `slept ${step.sleep_ms}ms` };
+  }
+  if ("command_exit" in step) {
+    await snapshotText(session); // flush a pending OSC 133 D marker
+    const last = session.commands[session.commands.length - 1];
+    if (!last) return { ok: false, detail: "no shell command recorded (needs shell_integration:true)" };
+    const ok = last.exitCode === step.command_exit;
+    return {
+      ok,
+      detail: ok ? `exit ${last.exitCode}` : `expected exit ${step.command_exit}, got ${last.exitCode}`,
+    };
   }
   if ("expect_exit" in step) {
     if (!(await waitForExit(session, step.timeout_ms))) {
@@ -159,11 +172,13 @@ export async function runTest(spec: TestSpec): Promise<TestResult> {
     cols: spec.cols,
     rows: spec.rows,
     cwd: spec.cwd,
+    shellIntegration: spec.shell_integration,
   });
   const steps: StepResult[] = [];
 
   try {
     await waitForIdle(session, 150, 3000);
+    if (session.integrationReady) await session.integrationReady;
     for (const [index, step] of spec.steps.entries()) {
       const start = Date.now();
       let outcome: { ok: boolean; detail: string };
