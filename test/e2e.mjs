@@ -13,6 +13,27 @@ rmSync(REC_DIR, { recursive: true, force: true });
 const { check, summary } = makeChecker();
 const { child, call, rpc } = await startServer({ TERMINAL_DRIVER_MCP_RECORDING_DIR: REC_DIR });
 
+// --- tool annotations surface via tools/list ---
+{
+  const list = await rpc("tools/list", {});
+  const byName = Object.fromEntries((list.result?.tools ?? []).map((t) => [t.name, t]));
+  check(
+    "session_read is annotated read-only",
+    byName.session_read?.annotations?.readOnlyHint === true,
+    JSON.stringify(byName.session_read?.annotations),
+  );
+  check(
+    "session_kill is annotated destructive",
+    byName.session_kill?.annotations?.destructiveHint === true,
+    JSON.stringify(byName.session_kill?.annotations),
+  );
+  check(
+    "session_write is not read-only",
+    byName.session_write?.annotations?.readOnlyHint === false,
+    JSON.stringify(byName.session_write?.annotations),
+  );
+}
+
 // --- vim scenario ---
 let r = await call("session_create", {
   session_id: "v",

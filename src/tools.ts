@@ -63,6 +63,19 @@ const safe =
     }
   };
 
+// Tool annotations: hints that let clients auto-approve reads and flag
+// destructive ops. Without them, clients treat every tool as maximally
+// destructive (confirmation friction on every call). openWorldHint stays false
+// — a terminal driver is a closed domain (the tool, not the app it runs).
+const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const MUTATING = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+const DESTRUCTIVE = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
 /**
  * How long output must stay quiet before a tool returns the screen (idleMs),
  * bounded by timeoutMs so animated UIs cannot stall a tool call.
@@ -123,6 +136,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_create",
     {
+      annotations: MUTATING,
       title: "Create terminal session",
       description:
         "Spawn a persistent PTY-backed terminal session running a command (or an interactive shell if omitted). " +
@@ -178,6 +192,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "execute_command",
     {
+      annotations: MUTATING,
       title: "Execute command to completion",
       description:
         "One-shot convenience: run a command in a fresh PTY, wait for it to finish, and return its full " +
@@ -215,6 +230,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_read",
     {
+      annotations: READ_ONLY,
       title: "Read terminal screen",
       description:
         "Snapshot the current rendered screen of a session. 'text' returns the plain visual grid " +
@@ -247,6 +263,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_write",
     {
+      annotations: MUTATING,
       title: "Write input to terminal",
       description:
         "Send keystrokes to a session: 'input' is written literally, then each entry in 'special_keys' " +
@@ -329,6 +346,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_wait",
     {
+      annotations: READ_ONLY,
       title: "Wait for pattern on screen",
       description:
         "Poll the rendered screen until a regex matches (checked every 50ms against the plain-text grid, " +
@@ -357,6 +375,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_wait_idle",
     {
+      annotations: READ_ONLY,
       title: "Wait for terminal to go idle",
       description:
         "Wait until the session stabilizes, then return the screen. Mode 'silence' resolves when no output " +
@@ -391,6 +410,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_assert",
     {
+      annotations: READ_ONLY,
       title: "Assert screen state",
       description:
         "Deterministic test primitive: check that expected_text appears on the visible screen. " +
@@ -423,6 +443,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_region",
     {
+      annotations: READ_ONLY,
       title: "Read screen region",
       description:
         "Extract a rectangular region of the visible screen (0-based row/col, padded to exact width). " +
@@ -447,6 +468,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_screenshot",
     {
+      annotations: READ_ONLY,
       title: "Screenshot the terminal as an image",
       description:
         "Render the current screen (colors, styles, box-drawing, cursor) to a PNG image and return it. " +
@@ -473,6 +495,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "run_test",
     {
+      annotations: MUTATING,
       title: "Run deterministic TUI test",
       description:
         "Replay a JSON test script against a fresh PTY session and return pass/fail per step — deterministic, " +
@@ -510,6 +533,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "recording_to_test",
     {
+      annotations: MUTATING,
       title: "Convert a recording into a test skeleton",
       description:
         "Turn a session's asciicast (.cast) recording into a run_test JSON draft — the 'drive it once by " +
@@ -548,6 +572,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_click",
     {
+      annotations: MUTATING,
       title: "Click in the terminal",
       description:
         "Send a mouse click at a 0-based (row, col) as SGR mouse sequences — for TUIs that enable mouse " +
@@ -574,6 +599,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_drag",
     {
+      annotations: MUTATING,
       title: "Drag in the terminal",
       description:
         "Press at (from_row, from_col), move to (to_row, to_col), and release — SGR mouse drag for pane " +
@@ -600,6 +626,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_info",
     {
+      annotations: READ_ONLY,
       title: "Inspect session state",
       description:
         "Report what the running app has configured: raw/mode flags (bracketed paste, mouse tracking, " +
@@ -624,6 +651,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_last_command",
     {
+      annotations: READ_ONLY,
       title: "Get the last command's result",
       description:
         "Return the most recently completed shell command's exact output, exit code, and duration — no screen " +
@@ -654,6 +682,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_wait_command",
     {
+      annotations: READ_ONLY,
       title: "Wait for the running command to finish",
       description:
         "Block until the session's current shell command completes (OSC 133), then return its output, exit code, " +
@@ -697,6 +726,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_resize",
     {
+      annotations: MUTATING,
       title: "Resize terminal",
       description:
         "Resize a session's terminal (PTY and emulator), triggering SIGWINCH so full-screen apps reflow. " +
@@ -714,6 +744,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_list",
     {
+      annotations: READ_ONLY,
       title: "List terminal sessions",
       description: "List all sessions with pid, command, dimensions, status, and age.",
       inputSchema: {},
@@ -733,6 +764,7 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "session_kill",
     {
+      annotations: DESTRUCTIVE,
       title: "Kill terminal session",
       description: "Terminate a session's process (SIGTERM, then SIGKILL) and free its resources.",
       inputSchema: { session_id: sessionId },
