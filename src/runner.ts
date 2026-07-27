@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { matchGolden } from "./golden.js";
 import { decodeHex, encodeKey } from "./keys.js";
+import { type FileResult, jsonReport, junitReport } from "./report.js";
 import { assertScreen, type CellSnapshot, snapshotCells, snapshotText } from "./screen.js";
 import {
   appCursorMode,
@@ -281,20 +282,36 @@ export function parseTest(json: string, source: string): TestSpec {
   return parsed.data;
 }
 
+// Pull `--flag value` out of an argv list, returning the value (or undefined).
+function takeOption(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  if (i < 0 || i + 1 >= args.length) return undefined;
+  const value = args[i + 1];
+  args.splice(i, 2);
+  return value;
+}
+
 /**
  * CLI entry: run each test file, print results, return a process exit code.
- * A `--update` argument (anywhere in the list) regenerates golden snapshots;
- * each file's goldens live in a `__screens__/` dir beside it.
+ * Flags: `--update` regenerates golden snapshots (in a `__screens__/` dir
+ * beside each file), `--trace` writes a `<file>.trace.html`, and
+ * `--junit <path>` / `--json <path>` write aggregated CI reports.
  */
 export async function runTestFiles(args: string[], print: (line: string) => void): Promise<number> {
-  const update = args.includes("--update");
-  const trace = args.includes("--trace");
-  const files = args.filter((a) => !a.startsWith("--"));
+  const rest = [...args];
+  const junitOut = takeOption(rest, "--junit");
+  const jsonOut = takeOption(rest, "--json");
+  const update = rest.includes("--update");
+  const trace = rest.includes("--trace");
+  const files = rest.filter((a) => !a.startsWith("--"));
   if (files.length === 0) {
-    print("Usage: terminal-driver-mcp run [--update] [--trace] <test.json...>");
+    print(
+      "Usage: terminal-driver-mcp run [--update] [--trace] [--junit <path>] [--json <path>] <test.json...>",
+    );
     return 2;
   }
   let failures = 0;
+  const collected: FileResult[] = [];
   for (const file of files) {
     let result: TestResult;
     try {
@@ -310,8 +327,17 @@ export async function runTestFiles(args: string[], print: (line: string) => void
       failures++;
       continue;
     }
+    collected.push({ file, result });
     print(formatResult(result));
     if (!result.ok) failures++;
+  }
+  if (junitOut) {
+    writeFileSync(junitOut, junitReport(collected));
+    print(`  JUnit report: ${junitOut}`);
+  }
+  if (jsonOut) {
+    writeFileSync(jsonOut, jsonReport(collected));
+    print(`  JSON report: ${jsonOut}`);
   }
   print(
     failures === 0

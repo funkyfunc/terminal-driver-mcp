@@ -1,6 +1,6 @@
 {
   "name": "terminal-driver-mcp",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "A real interactive terminal for AI agents (MCP). Run and test vim, htop, gdb, REPLs, and any TUI — things the built-in fire-and-forget terminal can't touch.",
   "type": "module",
   "license": "MIT",
@@ -58,7 +58,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
-    "test": "npm run build && node test/unit-golden.mjs && node test/unit-keys.mjs && node test/unit-mouse.mjs && node test/unit-render.mjs && node test/unit-screen.mjs && node test/unit-shell.mjs && node test/unit-skeleton.mjs && node test/unit-trace.mjs && node test/e2e.mjs && node test/gauntlet.mjs",
+    "test": "npm run build && node test/unit-golden.mjs && node test/unit-keys.mjs && node test/unit-mouse.mjs && node test/unit-render.mjs && node test/unit-report.mjs && node test/unit-screen.mjs && node test/unit-shell.mjs && node test/unit-skeleton.mjs && node test/unit-trace.mjs && node test/e2e.mjs && node test/gauntlet.mjs",
     "inspector": "npx @modelcontextprotocol/inspector node dist/index.js"
   },
   "dependencies": {

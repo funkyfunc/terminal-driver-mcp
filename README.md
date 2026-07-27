@@ -97,7 +97,9 @@ Every persistent session is recorded to an [asciicast v2](https://docs.asciinema
 The agent drives your TUI interactively once, then writes a JSON test script that replays forever with **no LLM in the loop** — in CI via:
 
 ```sh
-node dist/index.js run tests/*.json   # exit 0 = all pass, 1 = failures
+node dist/index.js run tests/*.json               # exit 0 = all pass, 1 = failures
+node dist/index.js run --junit out.xml tests/*.json  # + JUnit report for CI (also --json)
+node dist/index.js run --trace tests/*.json          # + a self-contained HTML trace per test
 ```
 
 or ad-hoc via the `run_test` tool. Example script:
@@ -119,7 +121,13 @@ or ad-hoc via the `run_test` tool. Example script:
 }
 ```
 
-Step types: `{"wait": "<regex>"}`, `{"idle_ms": N, "mode"?: "silence"|"stable_screen"}`, `{"write": "text", "keys": [...], "raw_hex"?}`, `{"assert": "text", "row"?, "col"?}`, `{"resize": [cols, rows]}`, `{"sleep_ms": N}`, `{"command_exit": N}` (with `"shell_integration": true`), `{"expect_exit": code}`. Execution stops at the first failing step and the report includes the final screen.
+Step types: `{"wait": "<regex>"}`, `{"idle_ms": N, "mode"?: "silence"|"stable_screen"}`, `{"write": "text", "keys": [...], "raw_hex"?}`, `{"assert": "text", "row"?, "col"?}`, `{"match_screen": "name", "mask"?: ["<regex>"]}`, `{"resize": [cols, rows]}`, `{"sleep_ms": N}`, `{"command_exit": N}` (with `"shell_integration": true`), `{"expect_exit": code}`. Execution stops at the first failing step and the report includes the final screen.
+
+**Golden snapshots.** A `match_screen` step compares the whole rendered screen against a stored golden file (in a `__screens__/` dir beside the test); regenerate with `run --update`, and mask volatile regions (clocks, PIDs) with `mask` regexes. Because the screen is a canonical text grid, mismatches show as a readable row diff.
+
+**HTML trace viewer.** `run --trace` (or the `run_test` `trace_file` param) writes a self-contained `trace.html` per test: a step list, the rendered screen captured after each step (colors and all), and a jump to the failing step — the terminal equivalent of Playwright's trace viewer, ideal as a CI failure artifact.
+
+**CI reporters.** `--junit <path>` and `--json <path>` write aggregated reports every CI system understands.
 
 ### Drive once, get a test
 

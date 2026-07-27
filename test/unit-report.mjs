@@ -1,0 +1,46 @@
+// Unit tests for the JUnit/JSON reporters — pure functions over TestResult.
+import { jsonReport, junitReport } from "../dist/report.js";
+
+let failures = 0;
+function check(label, cond, detail = "") {
+  console.log(`${cond ? "PASS" : "FAIL"}: ${label}`);
+  if (!cond) {
+    failures++;
+    if (detail) console.log(`    ${detail}`);
+  }
+}
+
+const results = [
+  {
+    file: "a.json",
+    result: {
+      name: "suite A",
+      ok: false,
+      steps: [
+        { index: 0, desc: "wait /x/", ok: true, detail: "matched", elapsedMs: 10 },
+        { index: 1, desc: 'assert "y"', ok: false, detail: 'FAIL: "y" not found\ncontext', elapsedMs: 5 },
+      ],
+    },
+  },
+];
+
+const xml = junitReport(results);
+check(
+  "junit has testsuites with totals",
+  xml.includes('<testsuites name="terminal-driver-mcp" tests="2" failures="1">'),
+  xml.slice(0, 120),
+);
+check("junit has a testcase per step", (xml.match(/<testcase /g) || []).length === 2, xml);
+check("junit emits a failure element", xml.includes("<failure ") && xml.includes("not found"), "no failure");
+check("junit escapes quotes in names", xml.includes("&quot;y&quot;"), "quotes not escaped");
+
+const json = JSON.parse(jsonReport(results));
+check(
+  "json is an array of file results",
+  Array.isArray(json) && json[0].name === "suite A" && json[0].ok === false,
+  JSON.stringify(json[0]),
+);
+check("json omits heavy cell captures", !("screen" in json[0].steps[0]), "screen leaked into json");
+
+console.log(failures === 0 ? "\nREPORT UNIT TESTS PASSED" : `\n${failures} REPORT UNIT FAILURES`);
+process.exit(failures === 0 ? 0 : 1);

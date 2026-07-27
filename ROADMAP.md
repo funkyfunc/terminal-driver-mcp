@@ -11,24 +11,17 @@ behind them. Nothing below Tier 1 is committed.
 - **OSC 133 semantic command boundaries** — `shell_integration` + `session_last_command` / `session_wait_command` / the `command_exit` test step.
 - **Deterministic test runner + record→skeleton** — `run_test`, CLI `run`, `recording_to_test`.
 - **OIDC trusted publishing** — tokenless CI release with provenance, manual-approval gate.
+- **MCP tool annotations** — read tools marked read-only (auto-approve), `session_kill` destructive.
+- **Golden screen snapshots** — `match_screen` step + `run --update`, volatile-region masking, readable row diffs.
+- **Self-contained HTML trace viewer** — `run --trace` writes one inlined `trace.html` per run (step list + per-step rendered screen, defaults to the failing step); doubles as the failure artifact.
+- **CI reporters** — `run --junit <path>` / `--json <path>`.
 
 ---
-
-## Tier 1 — "The Playwright moment" (do now)
-
-Deepen the testing moat with debugging DX that is *uniquely cheap for us*
-because structured cells + asciicast + per-step PNGs are already captured. Plus
-the near-free MCP hygiene that gates client auto-approval.
-
-- **Golden screen snapshots + `run --update`** — `toMatchScreen`-style assertions storing the text (and optionally color) grid under `__screens__/`, diffed on rerun, regenerated with `--update`; volatile-region masking (clocks/PIDs/spinners) for determinism. Our cells give human-readable line diffs, better than image diffing. _teatest proves this is the idiomatic way to test TUIs; Jest/`--update` DX._
-- **Self-contained HTML trace viewer** — one inlined `trace.html` per run: step list (from `run_test`), per-step screen before/after (PNG + cells), scrubbable asciicast timeline synced to steps, errors panel jumping to the failing step. The flagship "wow"; all inputs already exist. _Playwright trace viewer is the #1 cited migration reason._
-- **Failure artifacts + text-diff error messages** — on a failed step, auto-retain the PNG, cells, and asciicast segment; assertion failures print expected-vs-actual screen region as a text diff plus OSC 133 command context. Cheap; reuses existing capture. _Playwright `screenshot: only-on-failure`; Testing Library "assert what the user sees."_
-- **MCP tool annotations + titles** — `readOnlyHint` on read tools (auto-approve, no prompt), `destructiveHint` on `session_kill`, `idempotentHint`, friendly `title`s. ~½ day. _Missing annotations = every tool treated as maximally destructive; hurts auto-approve UX and directory acceptance._
 
 ## Tier 2 — Reliability, CI adoption, and the safety headline
 
 - **Auto-waiting baked into actions** — promote `wait-for-idle`/pattern to implicit preconditions before each keystroke/click, and make screen assertions auto-retry to a timeout. Kills the dominant flake source. _Playwright actionability / Cypress retry-ability; TUA-Bench shows pass@5 reliability is the field's weak spot._
-- **Reporters (JUnit/JSON/HTML) + `test.step` + soft assertions** — JUnit XML is the "runs in our CI" unlock; steps + soft assertions make long tests readable and report all failures at once. _Playwright reporters/steps._
+- **`test.step` grouping + soft assertions** — collapsible named phases in the trace/report; `expect.soft` collects all failures in a run. _Playwright steps/soft._
 - **Retries + flake detection/quarantine** — `--retries`, tri-state passed/flaky/failed, **fresh PTY per retry** (a wedged terminal is our #1 flake source), quarantine bucket. _Playwright test-retries._
 - **ANSI / escape-sequence injection sanitization** — a snapshot mode that neutralizes dangerous escapes (hidden-text `\033[8m`, OSC exfil/clipboard triggers) before returning to the model, with a raw-vs-sanitized toggle and a flagged-sequence report. Novel — no terminal MCP does it. _Validated live threat: Trail of Bits / Bright Security "ANSI-in-MCP", 2026 macOS DNS-exfil-via-escape exploit; #1 concern on the HN "Show HN: tui-use" thread._
 - **Structured tool output** (`outputSchema` + `structuredContent`) on `list_sessions`, `session_read`, `session_wait`, `session_create` — typed results instead of JSON-in-text so agents can chain calls reliably. Keep the text block for compatibility.
