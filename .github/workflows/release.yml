@@ -1,0 +1,57 @@
+name: Release
+
+# Publish to npm when a version tag is pushed. Auth is tokenless via npm
+# trusted publishing (OIDC) — no npm token or 2FA in CI. The `release`
+# environment gates the publish behind a manual approval (one click in the
+# GitHub UI), so a human still says "go" but no hardware key is involved.
+# See RELEASING.md for the one-time setup.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: release # required-reviewer gate: pauses here for manual approval
+    permissions:
+      id-token: write # mint the short-lived OIDC token for trusted publishing
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; setup-node ships older.
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - name: Verify the tag matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG" >&2
+            exit 1
+          fi
+      # No NODE_AUTH_TOKEN: npm detects the OIDC environment and authenticates
+      # itself. --provenance attaches a signed build-provenance attestation.
+      - run: npm publish --provenance
