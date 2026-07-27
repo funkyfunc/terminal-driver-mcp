@@ -1,5 +1,5 @@
 // Unit tests for golden snapshots and the screen diff — pure, deterministic.
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { screenDiff } from "../dist/diff.js";

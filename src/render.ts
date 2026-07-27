@@ -9,7 +9,8 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Resvg } from "@resvg/resvg-js";
-import type { CellRun, CellSnapshot } from "./screen.js";
+import { DEFAULT_BG, DEFAULT_FG, resolveColor } from "./colors.js";
+import type { CellSnapshot } from "./screen.js";
 
 const ASSETS = join(dirname(fileURLToPath(import.meta.url)), "..", "assets");
 const FONT_FAMILY = "JetBrains Mono";
@@ -23,46 +24,6 @@ const FONT_SIZE = 17;
 const CELL_W = Math.round(FONT_SIZE * 0.6);
 const CELL_H = Math.round(FONT_SIZE * 1.3);
 const PAD = 8;
-
-// Default 16-color palette (xterm) for palette-indexed colors 0-15.
-const ANSI_16 = [
-  "#000000",
-  "#cd0000",
-  "#00cd00",
-  "#cdcd00",
-  "#0000ee",
-  "#cd00cd",
-  "#00cdcd",
-  "#e5e5e5",
-  "#7f7f7f",
-  "#ff0000",
-  "#00ff00",
-  "#ffff00",
-  "#5c5cff",
-  "#ff00ff",
-  "#00ffff",
-  "#ffffff",
-];
-const DEFAULT_FG = "#e5e5e5";
-const DEFAULT_BG = "#1a1b26";
-
-function resolveColor(color: CellRun["fg"], fallback: string): string {
-  if (color === undefined) return fallback;
-  if (typeof color === "string") return color;
-  const idx = color.palette;
-  if (idx < 16) return ANSI_16[idx];
-  if (idx < 232) {
-    // 6x6x6 color cube
-    const n = idx - 16;
-    const to = (v: number) => (v === 0 ? 0 : v * 40 + 55);
-    const r = to(Math.floor(n / 36) % 6);
-    const g = to(Math.floor(n / 6) % 6);
-    const b = to(n % 6);
-    return `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
-  }
-  const gray = (idx - 232) * 10 + 8; // 24-step grayscale ramp
-  return `#${gray.toString(16).padStart(2, "0").repeat(3)}`;
-}
 
 const escapeXml = (s: string): string =>
   s.replace(/[<>&"]/g, (c) => (c === "<" ? "&lt;" : c === ">" ? "&gt;" : c === "&" ? "&amp;" : "&quot;"));

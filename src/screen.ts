@@ -80,7 +80,7 @@ export function scrolledOffLines(session: TerminalSession): number {
   return session.term.buffer.active.baseY;
 }
 
-type CellColor = string | { palette: number };
+export type CellColor = string | { palette: number };
 
 export interface CellStyle {
   fg?: CellColor;

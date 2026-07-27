@@ -518,9 +518,13 @@ export function registerTools(server: McpServer): void {
           .boolean()
           .default(false)
           .describe("(Re)write golden snapshots instead of comparing"),
+        trace_file: z
+          .string()
+          .optional()
+          .describe("Write a self-contained HTML trace of the run (per-step screens) to this path"),
       },
     },
-    safe(async ({ file, test_json, screens_dir, update_snapshots }) => {
+    safe(async ({ file, test_json, screens_dir, update_snapshots, trace_file }) => {
       let json: string;
       let source: string;
       if (file !== undefined && test_json !== undefined) {
@@ -537,9 +541,11 @@ export function registerTools(server: McpServer): void {
       const result = await runTest(parseTest(json, source), {
         screensDir: screens_dir,
         update: update_snapshots,
+        trace: trace_file,
       });
       const report = formatResult(result);
-      return result.ok ? ok(report) : fail(report);
+      const traceNote = trace_file && result ? `\nTrace: ${trace_file}` : "";
+      return result.ok ? ok(report + traceNote) : fail(report + traceNote);
     }),
   );
 

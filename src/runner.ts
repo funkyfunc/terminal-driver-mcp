@@ -4,12 +4,12 @@
  * loop. An agent authors the script interactively once; CI replays it forever
  * via `terminal-driver-mcp run <files...>` or the run_test tool.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { matchGolden } from "./golden.js";
 import { decodeHex, encodeKey } from "./keys.js";
-import { assertScreen, snapshotText } from "./screen.js";
+import { assertScreen, type CellSnapshot, snapshotCells, snapshotText } from "./screen.js";
 import {
   appCursorMode,
   createSession,
@@ -18,6 +18,7 @@ import {
   type TerminalSession,
   writeToSession,
 } from "./session-manager.js";
+import { renderTrace } from "./trace.js";
 import { waitForExit, waitForIdle, waitForPattern, waitForStableScreen } from "./wait.js";
 
 const timeoutMs = z.number().int().min(50).max(600000);
@@ -80,6 +81,7 @@ export interface StepResult {
   ok: boolean;
   detail: string;
   elapsedMs: number;
+  screen?: CellSnapshot; // captured after the step when tracing is on
 }
 
 export interface TestResult {
@@ -106,10 +108,12 @@ function describeStep(step: Step): string {
   return `write ${JSON.stringify(step.write)}${keys}${raw}`;
 }
 
-/** Where golden snapshots live and whether to (re)write them. */
+/** Where golden snapshots live, whether to (re)write them, and an optional trace path. */
 export interface RunOptions {
   screensDir?: string;
   update?: boolean;
+  /** If set, capture each step's screen and write a self-contained HTML trace here. */
+  trace?: string;
 }
 
 async function runStep(
@@ -208,6 +212,17 @@ export async function runTest(spec: TestSpec, options: RunOptions = {}): Promise
   const steps: StepResult[] = [];
   const ctx = { testName: spec.name, options };
 
+  const finish = (result: TestResult): TestResult => {
+    if (options.trace) {
+      try {
+        writeFileSync(options.trace, renderTrace(result));
+      } catch (err) {
+        console.error("[terminal-driver-mcp] could not write trace:", err);
+      }
+    }
+    return result;
+  };
+
   try {
     await waitForIdle(session, 150, 3000);
     if (session.integrationReady) await session.integrationReady;
@@ -219,12 +234,13 @@ export async function runTest(spec: TestSpec, options: RunOptions = {}): Promise
       } catch (err) {
         outcome = { ok: false, detail: err instanceof Error ? err.message : String(err) };
       }
-      steps.push({ index, desc: describeStep(step), ...outcome, elapsedMs: Date.now() - start });
+      const screen = options.trace ? await snapshotCells(session) : undefined;
+      steps.push({ index, desc: describeStep(step), ...outcome, elapsedMs: Date.now() - start, screen });
       if (!outcome.ok) {
-        return { name: spec.name, ok: false, steps, failureScreen: await snapshotText(session) };
+        return finish({ name: spec.name, ok: false, steps, failureScreen: await snapshotText(session) });
       }
     }
-    return { name: spec.name, ok: true, steps };
+    return finish({ name: spec.name, ok: true, steps });
   } finally {
     await killSession(id);
   }
@@ -272,17 +288,23 @@ export function parseTest(json: string, source: string): TestSpec {
  */
 export async function runTestFiles(args: string[], print: (line: string) => void): Promise<number> {
   const update = args.includes("--update");
-  const files = args.filter((a) => a !== "--update");
+  const trace = args.includes("--trace");
+  const files = args.filter((a) => !a.startsWith("--"));
   if (files.length === 0) {
-    print("Usage: terminal-driver-mcp run [--update] <test.json...>");
+    print("Usage: terminal-driver-mcp run [--update] [--trace] <test.json...>");
     return 2;
   }
   let failures = 0;
   for (const file of files) {
     let result: TestResult;
     try {
-      const options: RunOptions = { screensDir: join(dirname(file), "__screens__"), update };
+      const options: RunOptions = {
+        screensDir: join(dirname(file), "__screens__"),
+        update,
+        trace: trace ? `${file.replace(/\.json$/i, "")}.trace.html` : undefined,
+      };
       result = await runTest(parseTest(readFileSync(file, "utf8"), file), options);
+      if (trace && options.trace) print(`  trace: ${options.trace}`);
     } catch (err) {
       print(`FAIL: ${file} — ${err instanceof Error ? err.message : err}`);
       failures++;

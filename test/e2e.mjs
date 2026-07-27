@@ -608,4 +608,20 @@ try {
   check("golden: --update + compare round-trip", false, String(err.stdout || err));
 }
 
+// --- HTML trace viewer via the CLI ---
+try {
+  execFileSync("node", [SERVER, "run", "--trace", goldenFile], { encoding: "utf8" });
+  const tracePath = goldenFile.replace(/\.json$/i, ".trace.html");
+  const html = existsSync(tracePath) ? readFileSync(tracePath, "utf8") : "";
+  check(
+    "trace: --trace writes a self-contained HTML trace",
+    html.startsWith("<!doctype html>") &&
+      html.includes("GOLDEN-LINE") &&
+      !/(src|href)=["']https?:/.test(html),
+    `len=${html.length}`,
+  );
+} catch (err) {
+  check("trace: --trace writes a self-contained HTML trace", false, String(err.stdout || err));
+}
+
 process.exit(summary("E2E"));

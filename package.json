@@ -58,7 +58,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
-    "test": "npm run build && node test/unit-golden.mjs && node test/unit-keys.mjs && node test/unit-mouse.mjs && node test/unit-render.mjs && node test/unit-screen.mjs && node test/unit-shell.mjs && node test/unit-skeleton.mjs && node test/e2e.mjs && node test/gauntlet.mjs",
+    "test": "npm run build && node test/unit-golden.mjs && node test/unit-keys.mjs && node test/unit-mouse.mjs && node test/unit-render.mjs && node test/unit-screen.mjs && node test/unit-shell.mjs && node test/unit-skeleton.mjs && node test/unit-trace.mjs && node test/e2e.mjs && node test/gauntlet.mjs",
     "inspector": "npx @modelcontextprotocol/inspector node dist/index.js"
   },
   "dependencies": {
