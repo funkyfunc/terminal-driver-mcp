@@ -503,14 +503,24 @@ export function registerTools(server: McpServer): void {
         '{"name", "command", "cwd"?, "cols"?, "rows"?, "steps": [...]} where each step is one of ' +
         '{"wait": "<regex>", "timeout_ms"?} | {"idle_ms": N, "mode"?: "silence"|"stable_screen"} | ' +
         '{"write": "text", "keys": ["enter", ...]} | {"assert": "text", "row"?: N, "col"?: N} | ' +
-        '{"resize": [cols, rows]} | {"sleep_ms": N} | {"expect_exit": code}. ' +
-        "Execution stops at the first failing step and includes the final screen.",
+        '{"resize": [cols, rows]} | {"sleep_ms": N} | {"command_exit": code} | ' +
+        '{"match_screen": "name", "mask"?: ["<regex>"]} | {"expect_exit": code}. ' +
+        "Execution stops at the first failing step and includes the final screen. " +
+        "match_screen (golden snapshots) needs screens_dir; regenerate with update_snapshots:true.",
       inputSchema: {
         file: z.string().optional().describe("Path to a JSON test file"),
         test_json: z.string().optional().describe("Inline JSON test spec (alternative to file)"),
+        screens_dir: z
+          .string()
+          .optional()
+          .describe("Directory for golden screen snapshots (for match_screen steps)"),
+        update_snapshots: z
+          .boolean()
+          .default(false)
+          .describe("(Re)write golden snapshots instead of comparing"),
       },
     },
-    safe(async ({ file, test_json }) => {
+    safe(async ({ file, test_json, screens_dir, update_snapshots }) => {
       let json: string;
       let source: string;
       if (file !== undefined && test_json !== undefined) {
@@ -524,7 +534,10 @@ export function registerTools(server: McpServer): void {
       } else {
         return fail("Provide 'file' (path to a JSON test) or 'test_json' (inline JSON).");
       }
-      const result = await runTest(parseTest(json, source));
+      const result = await runTest(parseTest(json, source), {
+        screensDir: screens_dir,
+        update: update_snapshots,
+      });
       const report = formatResult(result);
       return result.ok ? ok(report) : fail(report);
     }),

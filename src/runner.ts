@@ -5,7 +5,9 @@
  * via `terminal-driver-mcp run <files...>` or the run_test tool.
  */
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { z } from "zod";
+import { matchGolden } from "./golden.js";
 import { decodeHex, encodeKey } from "./keys.js";
 import { assertScreen, snapshotText } from "./screen.js";
 import {
@@ -51,6 +53,7 @@ const StepSchema = z.union([
     .strict(),
   z.object({ sleep_ms: z.number().int().min(1).max(60000) }).strict(),
   z.object({ command_exit: z.number().int() }).strict(), // assert last shell command's exit code (needs shell_integration)
+  z.object({ match_screen: z.string(), mask: z.array(z.string()).default([]) }).strict(), // golden snapshot: compare the whole screen to a stored file (regenerate with --update)
   z.object({ expect_exit: z.number().int(), timeout_ms: timeoutMs.default(30000) }).strict(),
 ]);
 
@@ -96,13 +99,24 @@ function describeStep(step: Step): string {
   if ("resize" in step) return `resize ${step.resize[0]}x${step.resize[1]}`;
   if ("sleep_ms" in step) return `sleep ${step.sleep_ms}ms`;
   if ("command_exit" in step) return `command exit ${step.command_exit}`;
+  if ("match_screen" in step) return `match screen "${step.match_screen}"`;
   if ("expect_exit" in step) return `expect exit ${step.expect_exit}`;
   const keys = step.keys.length ? ` + [${step.keys.join(", ")}]` : "";
   const raw = step.raw_hex ? ` + raw_hex ${step.raw_hex}` : "";
   return `write ${JSON.stringify(step.write)}${keys}${raw}`;
 }
 
-async function runStep(session: TerminalSession, step: Step): Promise<{ ok: boolean; detail: string }> {
+/** Where golden snapshots live and whether to (re)write them. */
+export interface RunOptions {
+  screensDir?: string;
+  update?: boolean;
+}
+
+async function runStep(
+  session: TerminalSession,
+  step: Step,
+  ctx: { testName: string; options: RunOptions },
+): Promise<{ ok: boolean; detail: string }> {
   if ("wait" in step) {
     const result = await waitForPattern(session, new RegExp(step.wait, "m"), step.timeout_ms);
     return { ok: result.ok, detail: result.message };
@@ -137,6 +151,23 @@ async function runStep(session: TerminalSession, step: Step): Promise<{ ok: bool
       detail: ok ? `exit ${last.exitCode}` : `expected exit ${step.command_exit}, got ${last.exitCode}`,
     };
   }
+  if ("match_screen" in step) {
+    if (!ctx.options.screensDir) {
+      return {
+        ok: false,
+        detail: "match_screen needs a screens directory (run a test file via the CLI, or pass screens_dir)",
+      };
+    }
+    const actual = await snapshotText(session);
+    return matchGolden({
+      screensDir: ctx.options.screensDir,
+      testName: ctx.testName,
+      snapshotName: step.match_screen,
+      actual,
+      masks: step.mask,
+      update: ctx.options.update ?? false,
+    });
+  }
   if ("expect_exit" in step) {
     if (!(await waitForExit(session, step.timeout_ms))) {
       return { ok: false, detail: `process still running after ${step.timeout_ms}ms` };
@@ -164,7 +195,7 @@ async function runStep(session: TerminalSession, step: Step): Promise<{ ok: bool
 
 let runCounter = 0;
 
-export async function runTest(spec: TestSpec): Promise<TestResult> {
+export async function runTest(spec: TestSpec, options: RunOptions = {}): Promise<TestResult> {
   const id = `__test_${++runCounter}`;
   const session = createSession({
     id,
@@ -175,6 +206,7 @@ export async function runTest(spec: TestSpec): Promise<TestResult> {
     shellIntegration: spec.shell_integration,
   });
   const steps: StepResult[] = [];
+  const ctx = { testName: spec.name, options };
 
   try {
     await waitForIdle(session, 150, 3000);
@@ -183,7 +215,7 @@ export async function runTest(spec: TestSpec): Promise<TestResult> {
       const start = Date.now();
       let outcome: { ok: boolean; detail: string };
       try {
-        outcome = await runStep(session, step);
+        outcome = await runStep(session, step, ctx);
       } catch (err) {
         outcome = { ok: false, detail: err instanceof Error ? err.message : String(err) };
       }
@@ -233,17 +265,24 @@ export function parseTest(json: string, source: string): TestSpec {
   return parsed.data;
 }
 
-/** CLI entry: run each test file, print results, return a process exit code. */
-export async function runTestFiles(files: string[], print: (line: string) => void): Promise<number> {
+/**
+ * CLI entry: run each test file, print results, return a process exit code.
+ * A `--update` argument (anywhere in the list) regenerates golden snapshots;
+ * each file's goldens live in a `__screens__/` dir beside it.
+ */
+export async function runTestFiles(args: string[], print: (line: string) => void): Promise<number> {
+  const update = args.includes("--update");
+  const files = args.filter((a) => a !== "--update");
   if (files.length === 0) {
-    print("Usage: terminal-driver-mcp run <test.json...>");
+    print("Usage: terminal-driver-mcp run [--update] <test.json...>");
     return 2;
   }
   let failures = 0;
   for (const file of files) {
     let result: TestResult;
     try {
-      result = await runTest(parseTest(readFileSync(file, "utf8"), file));
+      const options: RunOptions = { screensDir: join(dirname(file), "__screens__"), update };
+      result = await runTest(parseTest(readFileSync(file, "utf8"), file), options);
     } catch (err) {
       print(`FAIL: ${file} — ${err instanceof Error ? err.message : err}`);
       failures++;

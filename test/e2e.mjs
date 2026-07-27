@@ -576,4 +576,36 @@ try {
   );
 }
 
+// --- golden snapshots via the CLI: --update creates, plain run compares ---
+const goldenFile = join(REC_DIR, "golden-test.json");
+writeFileSync(
+  goldenFile,
+  JSON.stringify({
+    name: "golden cli",
+    command: "printf 'GOLDEN-LINE\\n'; sleep 60",
+    cols: 40,
+    rows: 6,
+    steps: [{ wait: "GOLDEN-LINE" }, { match_screen: "main" }],
+  }),
+);
+try {
+  // First run without --update must fail (no golden yet).
+  execFileSync("node", [SERVER, "run", goldenFile], { encoding: "utf8" });
+  check("golden: missing snapshot fails before --update", false, "expected nonzero exit");
+} catch (err) {
+  check(
+    "golden: missing snapshot fails before --update",
+    err.status === 1 && /Run with --update/.test(String(err.stdout)),
+    String(err.stdout || err),
+  );
+}
+try {
+  const created = execFileSync("node", [SERVER, "run", "--update", goldenFile], { encoding: "utf8" });
+  check("golden: --update creates and passes", created.includes("PASS: golden cli"), created);
+  const compared = execFileSync("node", [SERVER, "run", goldenFile], { encoding: "utf8" });
+  check("golden: subsequent run matches", compared.includes("PASS: golden cli"), compared);
+} catch (err) {
+  check("golden: --update + compare round-trip", false, String(err.stdout || err));
+}
+
 process.exit(summary("E2E"));
