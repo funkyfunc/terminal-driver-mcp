@@ -61,6 +61,63 @@ export function validKeyNames(): string[] {
   return [...Object.keys(CSI_KEYS), "ctrl+<letter>", "alt+<char>", "<mods>+<key> (CSI-u, e.g. shift+escape)"];
 }
 
+// Common spellings of key names seen in the wild, mapped to the canonical name
+// so an unknown-key error can point straight at the right one.
+const KEY_ALIASES: Record<string, string> = {
+  esc: "escape",
+  return: "enter",
+  newline: "enter",
+  del: "delete",
+  ins: "insert",
+  bs: "backspace",
+  spacebar: "space",
+  pgup: "page_up",
+  pgdn: "page_down",
+  pgdown: "page_down",
+  pageup: "page_up",
+  pagedown: "page_down",
+  arrowup: "up",
+  arrowdown: "down",
+  arrowleft: "left",
+  arrowright: "right",
+  arrow_up: "up",
+  arrow_down: "down",
+  arrow_left: "left",
+  arrow_right: "right",
+};
+
+// Classic Levenshtein distance, small inputs only (key names).
+function editDistance(a: string, b: string): number {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...new Array<number>(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+/** Closest canonical key name for an unknown one, or undefined if nothing is close. */
+function suggestKey(name: string): string | undefined {
+  const alias = KEY_ALIASES[name];
+  if (alias) return alias;
+  let best: string | undefined;
+  let bestDist = 3; // anything further than 2 edits is a guess, not a suggestion
+  for (const known of Object.keys(CSI_KEYS)) {
+    const dist = editDistance(name, known);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = known;
+    }
+  }
+  return best;
+}
+
 /**
  * Encode a modifier chord as CSI-u: ESC [ code ; mods u. Chords like
  * shift+escape or ctrl+enter have no legacy encoding at all, so CSI-u is the
@@ -113,7 +170,9 @@ export function encodeKey(name: string, appCursorMode: boolean): string {
     if (encoded !== undefined) return encoded;
   }
 
-  throw new Error(`Unknown special key "${name}". Valid keys: ${validKeyNames().join(", ")}`);
+  const suggestion = suggestKey(key);
+  const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
+  throw new Error(`Unknown special key "${name}".${hint} Valid keys: ${validKeyNames().join(", ")}`);
 }
 
 /** Encode a hex string (whitespace/0x prefixes tolerated) to raw bytes. */

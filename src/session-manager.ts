@@ -373,6 +373,16 @@ export function mouseTrackingMode(session: TerminalSession): string {
   return modes(session).mouseTrackingMode ?? "none";
 }
 
+/** True when the app has enabled bracketed paste mode (DECSET 2004). */
+export function bracketedPasteMode(session: TerminalSession): boolean {
+  return modes(session).bracketedPasteMode ?? false;
+}
+
+/** Wrap text in bracketed-paste markers so the app receives it as one atomic paste. */
+export function wrapPaste(text: string): string {
+  return `\x1b[200~${text}\x1b[201~`;
+}
+
 export interface SessionInfo {
   id: string;
   pid: number;

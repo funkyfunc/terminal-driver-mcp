@@ -3,11 +3,13 @@
  *
  * Format: ESC [ < Cb ; Cx ; Cy (M=press, m=release), where Cx/Cy are
  * 1-based columns/rows. Button codes: 0=left, 1=middle, 2=right; add 32 for
- * a motion (drag) event.
+ * a motion (drag) event; 64/65 are wheel up/down (press-only, no release).
  */
 export type MouseButton = "left" | "middle" | "right";
+export type WheelDirection = "wheel_up" | "wheel_down";
 
 const BUTTON_CODE: Record<MouseButton, number> = { left: 0, middle: 1, right: 2 };
+const WHEEL_CODE: Record<WheelDirection, number> = { wheel_up: 64, wheel_down: 65 };
 const MOTION = 32;
 
 // Agent row/col are 0-based (matching session_read); SGR is 1-based.
@@ -23,6 +25,14 @@ export function encodeClick(button: MouseButton, row: number, col: number, count
   const code = BUTTON_CODE[button];
   let out = "";
   for (let i = 0; i < count; i++) out += press(code, row, col) + release(code, row, col);
+  return out;
+}
+
+/** Wheel scrolling at a cell: one press-only event per tick (wheel has no release). */
+export function encodeWheel(direction: WheelDirection, row: number, col: number, ticks = 1): string {
+  const code = WHEEL_CODE[direction];
+  let out = "";
+  for (let i = 0; i < ticks; i++) out += press(code, row, col);
   return out;
 }
 

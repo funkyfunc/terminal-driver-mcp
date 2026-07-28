@@ -41,5 +41,21 @@ try {
 console.log(`${threw ? "PASS" : "FAIL"}: unknown key name throws`);
 if (!threw) failures++;
 
+// Near-miss names get a did-you-mean pointing at the canonical key.
+function suggestionFor(name) {
+  try {
+    encodeKey(name, false);
+    return "<no throw>";
+  } catch (err) {
+    const m = String(err.message).match(/Did you mean "([^"]+)"/);
+    return m ? m[1] : "<no suggestion>";
+  }
+}
+eq("alias pgup suggests page_up", suggestionFor("pgup"), "page_up");
+eq("alias esc suggests escape", suggestionFor("esc"), "escape");
+eq("alias return suggests enter", suggestionFor("return"), "enter");
+eq("typo 'entr' suggests enter", suggestionFor("entr"), "enter");
+eq("alias arrow_up suggests up", suggestionFor("arrow_up"), "up");
+
 console.log(failures === 0 ? "\nKEY UNIT TESTS PASSED" : `\n${failures} KEY UNIT FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

@@ -13,10 +13,12 @@ import { type FileResult, jsonReport, junitReport } from "./report.js";
 import { assertScreen, type CellSnapshot, snapshotCells, snapshotText } from "./screen.js";
 import {
   appCursorMode,
+  bracketedPasteMode,
   createSession,
   killSession,
   resizeSession,
   type TerminalSession,
+  wrapPaste,
   writeToSession,
 } from "./session-manager.js";
 import { renderTrace } from "./trace.js";
@@ -31,7 +33,9 @@ const group = z.string().optional().describe("Section label to group this step u
 // overall, but execution continues instead of stopping at that step.
 const soft = z.boolean().default(false).describe("Record the failure and keep going (still fails the test)");
 
-const StepSchema = z.union([
+// Exported so session_batch can run the exact same step grammar against a
+// live session — one DSL for interactive batches and CI replay alike.
+export const StepSchema = z.union([
   z
     .object({
       wait: z.string(),
@@ -53,6 +57,7 @@ const StepSchema = z.union([
       write: z.string().default(""),
       keys: z.array(z.string()).default([]),
       raw_hex: z.string().default(""),
+      paste: z.boolean().default(false), // send 'write' as a bracketed paste (needs the app's paste mode on)
       group,
     })
     .strict()
@@ -97,7 +102,7 @@ export const TestSchema = z
 export type TestSpec = z.infer<typeof TestSchema>;
 /** The pre-validation shape (schema defaults not yet applied) — for emitting clean skeletons. */
 export type TestDraft = z.input<typeof TestSchema>;
-type Step = z.infer<typeof StepSchema>;
+export type Step = z.infer<typeof StepSchema>;
 
 export interface StepResult {
   index: number;
@@ -137,7 +142,7 @@ function describeStep(step: Step): string {
   if ("expect_exit" in step) return `expect exit ${step.expect_exit}`;
   const keys = step.keys.length ? ` + [${step.keys.join(", ")}]` : "";
   const raw = step.raw_hex ? ` + raw_hex ${step.raw_hex}` : "";
-  return `write ${JSON.stringify(step.write)}${keys}${raw}`;
+  return `write ${JSON.stringify(step.write)}${step.paste ? " (paste)" : ""}${keys}${raw}`;
 }
 
 /** Where golden snapshots live, whether to (re)write them, and an optional trace path. */
@@ -227,11 +232,56 @@ async function runStep(
   const app = appCursorMode(session);
   const encoded = step.keys.map((k) => encodeKey(k, app));
   const rawBytes = step.raw_hex ? decodeHex(step.raw_hex) : "";
-  if (step.write) writeToSession(session, step.write);
+  if (step.write) {
+    if (step.paste && !bracketedPasteMode(session)) {
+      return {
+        ok: false,
+        detail: "paste:true, but the app has not enabled bracketed paste mode (DECSET 2004)",
+      };
+    }
+    writeToSession(session, step.paste ? wrapPaste(step.write) : step.write);
+  }
   for (const bytes of encoded) writeToSession(session, bytes);
   if (rawBytes) writeToSession(session, rawBytes);
   await waitForIdle(session, 80, 2000);
   return { ok: true, detail: "written" };
+}
+
+/**
+ * Run steps in order against an existing session: a hard failure stops the
+ * sequence, a soft failure is recorded and execution continues. Shared by
+ * runTest (fresh session) and the session_batch tool (live session).
+ */
+export async function executeSteps(
+  session: TerminalSession,
+  specSteps: Step[],
+  ctx: { testName: string; options: RunOptions },
+): Promise<{ ok: boolean; steps: StepResult[] }> {
+  const steps: StepResult[] = [];
+  for (const [index, step] of specSteps.entries()) {
+    const start = Date.now();
+    let outcome: { ok: boolean; detail: string };
+    try {
+      outcome = await runStep(session, step, ctx);
+    } catch (err) {
+      outcome = { ok: false, detail: err instanceof Error ? err.message : String(err) };
+    }
+    const screen = ctx.options.trace ? await snapshotCells(session) : undefined;
+    const soft = isSoft(step);
+    steps.push({
+      index,
+      desc: describeStep(step),
+      ...outcome,
+      elapsedMs: Date.now() - start,
+      group: step.group,
+      soft: soft && !outcome.ok ? true : undefined,
+      screen,
+    });
+    // A hard failure stops the run; a soft failure is recorded and we continue.
+    if (!outcome.ok && !soft) return { ok: false, steps };
+  }
+  // Ran every step: fail overall iff any (soft) assertion failed along the way.
+  return { ok: steps.every((s) => s.ok), steps };
 }
 
 let runCounter = 0;
@@ -246,8 +296,6 @@ export async function runTest(spec: TestSpec, options: RunOptions = {}): Promise
     cwd: spec.cwd,
     shellIntegration: spec.shell_integration,
   });
-  const steps: StepResult[] = [];
-  const ctx = { testName: spec.name, options };
 
   const finish = (result: TestResult): TestResult => {
     if (options.trace) {
@@ -263,32 +311,7 @@ export async function runTest(spec: TestSpec, options: RunOptions = {}): Promise
   try {
     await waitForIdle(session, 150, 3000);
     if (session.integrationReady) await session.integrationReady;
-    for (const [index, step] of spec.steps.entries()) {
-      const start = Date.now();
-      let outcome: { ok: boolean; detail: string };
-      try {
-        outcome = await runStep(session, step, ctx);
-      } catch (err) {
-        outcome = { ok: false, detail: err instanceof Error ? err.message : String(err) };
-      }
-      const screen = options.trace ? await snapshotCells(session) : undefined;
-      const soft = isSoft(step);
-      steps.push({
-        index,
-        desc: describeStep(step),
-        ...outcome,
-        elapsedMs: Date.now() - start,
-        group: step.group,
-        soft: soft && !outcome.ok ? true : undefined,
-        screen,
-      });
-      // A hard failure stops the run; a soft failure is recorded and we continue.
-      if (!outcome.ok && !soft) {
-        return finish({ name: spec.name, ok: false, steps, failureScreen: await snapshotText(session) });
-      }
-    }
-    // Ran every step: fail overall iff any (soft) assertion failed along the way.
-    const ok = steps.every((s) => s.ok);
+    const { ok, steps } = await executeSteps(session, spec.steps, { testName: spec.name, options });
     return finish({
       name: spec.name,
       ok,

@@ -250,6 +250,32 @@ export interface AssertOptions {
   col?: number; // require the text to start at this column (needs row)
   absent?: boolean; // invert: pass when the text is NOT present
   count?: number; // require exactly this many occurrences across the screen
+  regex?: boolean; // treat `expected` as a regex source instead of a literal substring
+}
+
+/**
+ * When a presence assertion fails, probe the near-misses an agent can act on:
+ * the text scrolled off-screen, spans a soft line wrap, differs only by case,
+ * or differs only in whitespace. Returns "" when nothing applies, so failures
+ * only pay for a hint that is actually useful.
+ */
+async function nearMissHint(session: TerminalSession, expected: string, lines: string[]): Promise<string> {
+  if (!expected || expected.includes("\n")) return "";
+  if ((await snapshotText(session, SCROLLBACK)).includes(expected)) {
+    return "\nHint: the text IS in scrollback — it scrolled off-screen; view it with session_read scrollback_lines.";
+  }
+  if (expected.length > 1 && lines.join("").includes(expected)) {
+    return "\nHint: the text spans a line break (wrapped across rows) — assert a shorter fragment that fits on one row.";
+  }
+  const lower = expected.toLowerCase();
+  if (lines.some((line) => line.toLowerCase().includes(lower))) {
+    return "\nHint: the text appears with different capitalization — check the case.";
+  }
+  const squash = (s: string) => s.replace(/\s+/g, " ").trim();
+  if (squash(expected).length > 0 && lines.map(squash).join(" ").includes(squash(expected))) {
+    return "\nHint: the text appears with different spacing (the terminal pads columns with spaces) — assert a shorter fragment.";
+  }
+  return "";
 }
 
 /**
@@ -266,42 +292,68 @@ export async function assertScreen(
   expected: string,
   opts: AssertOptions = {},
 ): Promise<AssertResult> {
-  const { row, col, absent = false, count } = opts;
+  const { row, col, absent = false, count, regex = false } = opts;
   await flush(session);
   const lines = (await snapshotText(session)).split("\n");
 
+  let pattern: RegExp | undefined;
+  if (regex) {
+    if (col !== undefined) {
+      return {
+        ok: false,
+        message: "FAIL: a regex check cannot be pinned to a column; use a literal substring.",
+      };
+    }
+    try {
+      pattern = new RegExp(expected, "m");
+    } catch (err) {
+      return {
+        ok: false,
+        message: `FAIL: invalid regex "${expected}": ${err instanceof Error ? err.message : err}`,
+      };
+    }
+  }
+  const label = regex ? `/${expected}/` : `"${expected}"`;
+  const lineHas = (line: string): boolean => (pattern ? pattern.test(line) : line.includes(expected));
+  // Presence-failure hints only make sense for literal substrings.
+  const hint = async (): Promise<string> => (pattern ? "" : await nearMissHint(session, expected, lines));
+
   if (count !== undefined) {
     if (row !== undefined || col !== undefined || absent) {
-      return { ok: false, message: "FAIL: count cannot be combined with exact_row/exact_col/absent." };
+      return { ok: false, message: "FAIL: count cannot be combined with row/col/absent." };
     }
     // Non-overlapping occurrences across the whole screen text.
     const hay = lines.join("\n");
     let occurrences = 0;
-    for (
-      let i = expected.length > 0 ? hay.indexOf(expected) : -1;
-      i !== -1;
-      i = hay.indexOf(expected, i + expected.length)
-    ) {
-      occurrences++;
+    if (pattern) {
+      occurrences = [...hay.matchAll(new RegExp(expected, "gm"))].length;
+    } else {
+      for (
+        let i = expected.length > 0 ? hay.indexOf(expected) : -1;
+        i !== -1;
+        i = hay.indexOf(expected, i + expected.length)
+      ) {
+        occurrences++;
+      }
     }
-    const rowsWith = lines.map((line, y) => ({ line, y })).filter(({ line }) => line.includes(expected));
+    const rowsWith = lines.map((line, y) => ({ line, y })).filter(({ line }) => lineHas(line));
     const listing = rowsWith.length > 0 ? `\n${rowsWith.map((h) => `  ${h.y}: ${h.line}`).join("\n")}` : "";
     if (occurrences === count) {
-      return { ok: true, message: `PASS: "${expected}" appears ${occurrences} time(s).${listing}` };
+      return { ok: true, message: `PASS: ${label} appears ${occurrences} time(s).${listing}` };
     }
     return {
       ok: false,
-      message: `FAIL: expected "${expected}" ${count} time(s), found ${occurrences}.${listing}`,
+      message: `FAIL: expected ${label} ${count} time(s), found ${occurrences}.${listing}`,
     };
   }
 
   if (col !== undefined && row === undefined) {
-    return { ok: false, message: "FAIL: exact_col requires exact_row." };
+    return { ok: false, message: "FAIL: col requires row." };
   }
 
   if (absent) {
     if (col !== undefined) {
-      return { ok: false, message: "FAIL: absent cannot be combined with exact_col." };
+      return { ok: false, message: "FAIL: absent cannot be combined with col." };
     }
     if (row !== undefined) {
       if (row >= lines.length) {
@@ -311,22 +363,22 @@ export async function assertScreen(
         };
       }
       const actual = lines[row];
-      if (!actual.includes(expected)) {
-        return { ok: true, message: `PASS: row ${row} does not contain "${expected}".\n  ${row}: ${actual}` };
+      if (!lineHas(actual)) {
+        return { ok: true, message: `PASS: row ${row} does not contain ${label}.\n  ${row}: ${actual}` };
       }
       return {
         ok: false,
-        message: `FAIL: row ${row} unexpectedly contains "${expected}".\n  ${row}: ${actual}`,
+        message: `FAIL: row ${row} unexpectedly contains ${label}.\n  ${row}: ${actual}`,
       };
     }
-    const found = lines.map((line, y) => ({ line, y })).filter(({ line }) => line.includes(expected));
+    const found = lines.map((line, y) => ({ line, y })).filter(({ line }) => lineHas(line));
     if (found.length === 0) {
-      return { ok: true, message: `PASS: "${expected}" is absent from the visible screen.` };
+      return { ok: true, message: `PASS: ${label} is absent from the visible screen.` };
     }
     const listing = found.map((h) => `  ${h.y}: ${h.line}`).join("\n");
     return {
       ok: false,
-      message: `FAIL: "${expected}" should be absent but appears on row(s) ${found.map((h) => h.y).join(", ")}.\n${listing}`,
+      message: `FAIL: ${label} should be absent but appears on row(s) ${found.map((h) => h.y).join(", ")}.\n${listing}`,
     };
   }
 
@@ -355,8 +407,8 @@ export async function assertScreen(
       };
     }
 
-    if (actual.includes(expected)) {
-      return { ok: true, message: `PASS: row ${row} contains "${expected}".\n  ${row}: ${actual}` };
+    if (lineHas(actual)) {
+      return { ok: true, message: `PASS: row ${row} contains ${label}.\n  ${row}: ${actual}` };
     }
     const context = lines
       .map((line, y) => `  ${y}: ${line}`)
@@ -364,20 +416,25 @@ export async function assertScreen(
       .join("\n");
     return {
       ok: false,
-      message: `FAIL: row ${row} does not contain "${expected}".\nExpected: ${expected}\nActual row ${row}: ${actual}\nContext:\n${context}`,
+      message: `FAIL: row ${row} does not contain ${label}.\nExpected: ${expected}\nActual row ${row}: ${actual}${await hint()}\nContext:\n${context}`,
     };
   }
 
-  const hits = lines.map((line, y) => ({ line, y })).filter(({ line }) => line.includes(expected));
+  const hits = lines.map((line, y) => ({ line, y })).filter(({ line }) => lineHas(line));
   if (hits.length > 0) {
     const listing = hits.map((h) => `  ${h.y}: ${h.line}`).join("\n");
     return {
       ok: true,
-      message: `PASS: "${expected}" found on row(s) ${hits.map((h) => h.y).join(", ")}.\n${listing}`,
+      message: `PASS: ${label} found on row(s) ${hits.map((h) => h.y).join(", ")}.\n${listing}`,
     };
+  }
+  // A multiline regex (e.g. one using \n or ^...$ anchors across rows) can
+  // match the joined screen without matching any single line.
+  if (pattern?.test(lines.join("\n"))) {
+    return { ok: true, message: `PASS: ${label} matches the visible screen.` };
   }
   return {
     ok: false,
-    message: `FAIL: "${expected}" not found on the visible screen.\n${statusHeader(session)}\n${lines.join("\n")}`,
+    message: `FAIL: ${label} not found on the visible screen.${await hint()}\n${statusHeader(session)}\n${lines.join("\n")}`,
   };
 }

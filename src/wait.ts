@@ -5,9 +5,33 @@
  * what actually happened — including on timeout.
  */
 import { snapshotText } from "./screen.js";
-import type { TerminalSession } from "./session-manager.js";
+import { SCROLLBACK, type TerminalSession } from "./session-manager.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * On a pattern-wait timeout, probe the near-misses an agent can actually act
+ * on: the pattern already scrolled off-screen, or it differs only by case.
+ * Returns "" when neither applies, so the hint costs tokens only when useful.
+ */
+async function patternTimeoutHint(session: TerminalSession, pattern: RegExp): Promise<string> {
+  const withScrollback = await snapshotText(session, SCROLLBACK);
+  if (pattern.test(withScrollback)) {
+    return " Note: the pattern DOES match in scrollback — it likely scrolled off-screen; view it with session_read scrollback_lines.";
+  }
+  try {
+    const insensitive = new RegExp(pattern.source, `${pattern.flags}i`);
+    if (insensitive.test(await snapshotText(session))) {
+      return " Note: the pattern matches ignoring case — check the capitalization.";
+    }
+  } catch {
+    /* flags already had i, or exotic pattern — no hint */
+  }
+  return "";
+}
+
+const IDLE_TIMEOUT_TIP =
+  " The app may be redrawing continuously (spinner, clock, progress bar); if you know what should appear, wait for that pattern instead.";
 
 export interface WaitResult {
   ok: boolean;
@@ -53,11 +77,12 @@ export async function waitForPattern(
       };
     }
     if (elapsedMs >= timeoutMs) {
+      const hint = absent ? "" : await patternTimeoutHint(session, pattern);
       return {
         ok: false,
         elapsedMs,
         screen,
-        message: `Timed out after ${timeoutMs}ms waiting for ${goal}.`,
+        message: `Timed out after ${timeoutMs}ms waiting for ${goal}.${hint}`,
       };
     }
     sessionEnded = session.exited;
@@ -95,7 +120,7 @@ export async function waitForIdle(
         ok: false,
         elapsedMs,
         screen,
-        message: `Timed out after ${timeoutMs}ms: output never stayed idle for ${idleMs}ms.`,
+        message: `Timed out after ${timeoutMs}ms: output never stayed idle for ${idleMs}ms.${IDLE_TIMEOUT_TIP}`,
       };
     }
     await sleep(25);
@@ -132,7 +157,7 @@ export async function waitForStableScreen(
         ok: false,
         elapsedMs,
         screen: last,
-        message: `Timed out after ${timeoutMs}ms: screen never held still for ${stableMs}ms.`,
+        message: `Timed out after ${timeoutMs}ms: screen never held still for ${stableMs}ms.${IDLE_TIMEOUT_TIP}`,
       };
     }
     await sleep(Math.min(50, stableMs));

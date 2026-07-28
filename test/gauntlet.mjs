@@ -48,9 +48,9 @@ check(
   r.text,
 );
 check("byte-split UTF-8 char renders", r.text.includes("RED-OKé!"), r.text);
-r = await call("session_assert", { session_id: ID, expected_text: "end", exact_row: 1, exact_col: 9 });
+r = await call("session_assert", { session_id: ID, check: "at", text: "end", row: 1, col: 9 });
 check("CJK wide chars occupy 2 columns each", !r.isError, r.text);
-r = await call("session_assert", { session_id: ID, expected_text: "EMOJI:hi" });
+r = await call("session_assert", { session_id: ID, text: "EMOJI:hi" });
 check("emoji line renders", !r.isError, r.text);
 
 // --- Stage 3: firehose ---
@@ -123,7 +123,7 @@ check("dialog receives the answer", !r.isError, r.text);
 // --- Completion ---
 r = await wait("GAUNTLET-COMPLETE", 8000);
 check("gauntlet completes", !r.isError, r.text);
-await call("session_wait_idle", { session_id: ID, idle_ms: 100, timeout_ms: 5000 });
+await call("session_wait", { session_id: ID, until: "idle", idle_ms: 100, timeout_ms: 5000 });
 r = await call("session_read", { session_id: ID });
 check("torture app exited cleanly", !r.isError && r.text.includes("exited(0)"), r.text);
 await call("session_kill", { session_id: ID });

@@ -49,42 +49,62 @@ check("session_wait for vim tildes", !r.isError, r.text);
 r = await call("session_write", { session_id: "v", input: "ihello world", special_keys: ["escape"] });
 check("session_write insert text", !r.isError, r.text);
 
-r = await call("session_assert", { session_id: "v", expected_text: "hello world", exact_row: 0 });
+r = await call("session_assert", { session_id: "v", text: "hello world", row: 0 });
 check("session_assert row 0", !r.isError, r.text);
 
-r = await call("session_assert", { session_id: "v", expected_text: "goodbye", exact_row: 0 });
+r = await call("session_assert", { session_id: "v", text: "goodbye", row: 0 });
 check("session_assert negative case reports failure", r.isError, r.text);
 
-// absent: assert text is NOT on screen
-r = await call("session_assert", { session_id: "v", expected_text: "goodbye", absent: true });
+// check:"absent" — assert text is NOT on screen
+r = await call("session_assert", { session_id: "v", check: "absent", text: "goodbye" });
 check("session_assert absent passes when text is gone", !r.isError && r.text.includes("is absent"), r.text);
-r = await call("session_assert", { session_id: "v", expected_text: "hello world", absent: true });
+r = await call("session_assert", { session_id: "v", check: "absent", text: "hello world" });
 check(
   "session_assert absent fails when text is present",
   r.isError && r.text.includes("should be absent"),
   r.text,
 );
 
-// count: exact occurrence assertion
-r = await call("session_assert", { session_id: "v", expected_text: "hello world", count: 1 });
+// check:"count" — exact occurrence assertion
+r = await call("session_assert", { session_id: "v", check: "count", text: "hello world", count: 1 });
 check(
   "session_assert count matches exact occurrences",
   !r.isError && r.text.includes("appears 1 time"),
   r.text,
 );
-r = await call("session_assert", { session_id: "v", expected_text: "hello world", count: 2 });
+r = await call("session_assert", { session_id: "v", check: "count", text: "hello world", count: 2 });
 check("session_assert count fails on wrong count", r.isError && r.text.includes("found 1"), r.text);
-r = await call("session_assert", { session_id: "v", expected_text: "hello world", count: 1, exact_row: 0 });
+r = await call("session_assert", { session_id: "v", check: "count", text: "hello world", count: 1, row: 0 });
 check(
-  "session_assert count rejects row/col combo",
-  r.isError && r.text.includes("cannot be combined"),
+  "session_assert count rejects a row scope with coaching",
+  r.isError && r.text.includes("whole-screen"),
+  r.text,
+);
+r = await call("session_assert", { session_id: "v", check: "count", text: "hello world" });
+check("session_assert count without count param is coached", r.isError && r.text.includes("'count'"), r.text);
+
+// check:"matches" — regex assertion
+r = await call("session_assert", { session_id: "v", check: "matches", text: "hel+o w\\w+" });
+check("session_assert matches accepts a regex", !r.isError, r.text);
+r = await call("session_assert", { session_id: "v", check: "matches", text: "[" });
+check(
+  "session_assert matches rejects a bad regex clearly",
+  r.isError && r.text.includes("invalid regex"),
+  r.text,
+);
+
+// near-miss coaching: wrong capitalization is hinted, not just "not found"
+r = await call("session_assert", { session_id: "v", text: "HELLO WORLD" });
+check(
+  "session_assert hints at a case-only mismatch",
+  r.isError && r.text.includes("different capitalization"),
   r.text,
 );
 
 r = await call("session_write", { session_id: "v", input: ":wq", special_keys: ["enter"] });
 check("session_write :wq", !r.isError, r.text);
 
-await call("session_wait_idle", { session_id: "v", idle_ms: 100, timeout_ms: 5000 });
+await call("session_wait", { session_id: "v", until: "idle", idle_ms: 100, timeout_ms: 5000 });
 await new Promise((s) => setTimeout(s, 500));
 const saved = existsSync(TESTFILE) ? readFileSync(TESTFILE, "utf8").trim() : "<missing>";
 check("vim saved file contents", saved === "hello world", `got: ${saved}`);
@@ -97,6 +117,12 @@ r = await call("session_create", { session_id: "sh", cols: 80, rows: 20 });
 check("session_create interactive shell", !r.isError, r.text);
 r = await call("session_write", { session_id: "sh", input: "", special_keys: ["bogus_key"] });
 check("unknown special key is a tool error", r.isError && r.text.includes("Unknown special key"), r.text);
+r = await call("session_write", { session_id: "sh", input: "", special_keys: ["pgup"] });
+check(
+  "near-miss key name gets a did-you-mean",
+  r.isError && r.text.includes('Did you mean "page_up"?'),
+  r.text,
+);
 r = await call("session_read", { session_id: "nope" });
 check("unknown session is a tool error", r.isError && r.text.includes("No session"), r.text);
 
@@ -171,6 +197,15 @@ check(
 );
 r = await call("session_read", { session_id: "scroll", scrollback_lines: 1000 });
 check("scrollback_lines recovers early output", !r.isError && /^1$/m.test(r.text), r.text);
+r = await call("session_wait", { session_id: "scroll", pattern: "^3$", timeout_ms: 400 });
+check(
+  "wait timeout hints when the pattern is in scrollback",
+  r.isError && r.text.includes("scrollback"),
+  r.text,
+);
+// "17" exists only as scrolled-off line 17 (visible rows are 81-100).
+r = await call("session_assert", { session_id: "scroll", text: "17" });
+check("assert failure hints when the text scrolled off", r.isError && r.text.includes("scrollback"), r.text);
 await call("session_kill", { session_id: "scroll" });
 
 // --- wait absent: block until a pattern disappears ---
@@ -183,9 +218,14 @@ r = await call("session_create", {
 });
 r = await call("session_wait", { session_id: "gone", pattern: "SPIN", timeout_ms: 5000 });
 check("wait sees the pattern first", !r.isError, r.text);
-r = await call("session_wait", { session_id: "gone", pattern: "SPIN", absent: true, timeout_ms: 5000 });
+r = await call("session_wait", {
+  session_id: "gone",
+  until: "pattern_gone",
+  pattern: "SPIN",
+  timeout_ms: 5000,
+});
 check(
-  "wait absent resolves once the pattern clears",
+  "until pattern_gone resolves once the pattern clears",
   !r.isError && r.text.includes("no longer present"),
   r.text,
 );
@@ -193,14 +233,20 @@ await call("session_kill", { session_id: "gone" });
 
 // --- new: stable_screen wait mode ---
 r = await call("session_create", { session_id: "st", command: "echo settled; sleep 60" });
-r = await call("session_wait_idle", {
+r = await call("session_wait", {
   session_id: "st",
-  mode: "stable_screen",
+  until: "stable_screen",
   idle_ms: 200,
   timeout_ms: 5000,
 });
 check("stable_screen wait resolves on static screen", !r.isError && r.text.includes("unchanged"), r.text);
 await call("session_kill", { session_id: "st" });
+
+// --- until "exit": block until the session's process terminates ---
+r = await call("session_create", { session_id: "bye", command: "sleep 0.2; exit 7" });
+r = await call("session_wait", { session_id: "bye", until: "exit", timeout_ms: 5000 });
+check("until exit resolves with the exit code", !r.isError && r.text.includes("exited (code 7)"), r.text);
+await call("session_kill", { session_id: "bye" });
 
 // --- terminal query responses (DSR cursor report) ---
 // A raw-mode reader sends ESC[6n and prints whatever comes back; a real
@@ -291,12 +337,90 @@ r = await call("session_write", {
 check("write-then-expect times out with final screen", r.isError && r.text.includes("Timed out"), r.text);
 await call("session_kill", { session_id: "we" });
 
+// --- bracketed paste: multi-line text lands as ONE atomic paste ---
+// A raw reader that enables paste mode (DECSET 2004) and hex-echoes its input.
+const pasteEchoScript =
+  'import tty,os,sys; sys.stdout.write("\\x1b[?2004h"); sys.stdout.flush(); tty.setraw(0); ' +
+  'os.write(1,b"PASTEREADY"); d=os.read(0,64); os.write(1,b"GOT:"+d.hex().encode()+b":DONE")';
+r = await call("session_create", { session_id: "paste", command: `python3 -c '${pasteEchoScript}'` });
+await call("session_wait", { session_id: "paste", pattern: "PASTEREADY", timeout_ms: 5000 });
+r = await call("session_write", { session_id: "paste", input: "a\nb", paste: true });
+r = await call("session_wait", { session_id: "paste", pattern: "GOT:.*:DONE", timeout_ms: 5000 });
+// ESC[200~ a \n b ESC[201~ = 1b5b3230307e 61 0a 62 1b5b3230317e
+check(
+  "paste wraps input in bracketed-paste markers",
+  !r.isError && r.text.includes("GOT:1b5b3230307e610a621b5b3230317e:DONE"),
+  r.text,
+);
+await call("session_kill", { session_id: "paste" });
+
+// paste against an app without paste mode is refused with coaching.
+r = await call("session_create", { session_id: "nopaste", command: "sleep 30" });
+r = await call("session_write", { session_id: "nopaste", input: "x\ny", paste: true });
+check(
+  "paste errors when the app has no bracketed paste mode",
+  r.isError && r.text.includes("bracketed paste"),
+  r.text,
+);
+await call("session_kill", { session_id: "nopaste" });
+
+// --- session_batch: write→wait→assert against a live session in one call ---
+r = await call("session_create", { session_id: "batch", command: "cat" });
+r = await call("session_batch", {
+  session_id: "batch",
+  steps: [
+    { write: "BATCH-MARKER", keys: ["enter"] },
+    { wait: "BATCH-MARKER" },
+    { assert: "BATCH-MARKER", count: 2 }, // typed line + cat's echo
+  ],
+});
+check(
+  "session_batch runs a step sequence and returns per-step results + screen",
+  !r.isError && r.text.includes("✓ step 3") && r.text.includes("[session batch"),
+  r.text,
+);
+r = await call("session_batch", {
+  session_id: "batch",
+  steps: [{ assert: "NEVER-THERE" }, { write: "should-not-run", keys: ["enter"] }],
+});
+check(
+  "session_batch stops at the first hard failure",
+  r.isError && r.text.includes("✗ step 1") && !r.text.includes("step 2"),
+  r.text,
+);
+r = await call("session_batch", {
+  session_id: "batch",
+  steps: [{ assert: "NEVER-THERE", soft: true }, { assert: "BATCH-MARKER" }],
+});
+check(
+  "session_batch soft failure records and continues",
+  r.isError && r.text.includes("(soft)") && r.text.includes("✓ step 2"),
+  r.text,
+);
+// The session survives the batch (batch must not kill it, unlike run_test).
+r = await call("session_read", { session_id: "batch" });
+check("session survives a batch", !r.isError && r.text.includes("running"), r.text);
+await call("session_kill", { session_id: "batch" });
+
+// --- session_wait_command fast-fails without integration ---
+r = await call("session_create", { session_id: "nointeg", command: "sleep 30" });
+{
+  const t0 = Date.now();
+  r = await call("session_wait_command", { session_id: "nointeg", timeout_ms: 15000 });
+  check(
+    "wait_command fast-fails with coaching when no OSC 133 is possible",
+    r.isError && r.text.includes("shell_integration") && Date.now() - t0 < 3000,
+    `${r.text} (took ${Date.now() - t0}ms)`,
+  );
+}
+await call("session_kill", { session_id: "nointeg" });
+
 // --- session_info reports what the app enabled ---
 // A python app that turns on mouse tracking, bracketed paste, and alt screen.
 const modesScript =
   'import sys,time; sys.stdout.write("\\x1b[?1049h\\x1b[?2004h\\x1b[?1000h\\x1b[?1006h"); sys.stdout.flush(); time.sleep(30)';
 r = await call("session_create", { session_id: "info", command: `python3 -c '${modesScript}'` });
-await call("session_wait_idle", { session_id: "info", idle_ms: 150, timeout_ms: 3000 });
+await call("session_wait", { session_id: "info", until: "idle", idle_ms: 150, timeout_ms: 3000 });
 r = await call("session_info", { session_id: "info" });
 const info = r.isError ? {} : JSON.parse(r.text);
 check("session_info reports alt screen", info.altScreen === true, r.text);
@@ -331,6 +455,15 @@ r = await call("session_wait", { session_id: "mouse", pattern: "GOT:.*:DONE", ti
 check("mouse click sends SGR press sequence", !r.isError && r.text.includes("1b5b3c303b363b334d"), r.text);
 await call("session_kill", { session_id: "mouse" });
 
+// wheel scrolling: SGR press-only events with button code 65 (wheel_down).
+r = await call("session_create", { session_id: "wheel", command: `python3 -c '${mouseEchoScript}'` });
+await call("session_wait", { session_id: "wheel", pattern: "MOUSEREADY", timeout_ms: 5000 });
+await call("session_click", { session_id: "wheel", row: 2, col: 5, button: "wheel_down" });
+r = await call("session_wait", { session_id: "wheel", pattern: "GOT:.*:DONE", timeout_ms: 5000 });
+// SGR wheel_down at (row2,col5) = ESC[<65;6;3M = hex 1b5b3c36353b363b334d
+check("wheel_down sends SGR button 65", !r.isError && r.text.includes("1b5b3c36353b363b334d"), r.text);
+await call("session_kill", { session_id: "wheel" });
+
 // --- record -> skeleton -> replay round-trip (feature #5) ---
 // Drive a `cat` session (deterministic echo), convert its recording into a
 // run_test skeleton, and replay it — the full "drive once, get a test" loop.
@@ -364,7 +497,7 @@ check("round-trip: generated skeleton replays GREEN", !r.isError && r.text.start
 // (which flakes under CI load). The flush-before-read invariant that wait_idle
 // relies on is pinned separately and deterministically in unit-screen.mjs.
 r = await call("session_create", { session_id: "idle", command: "echo LINE-A; echo IDLE-MARKER; sleep 60" });
-r = await call("session_wait_idle", { session_id: "idle", idle_ms: 100, timeout_ms: 5000 });
+r = await call("session_wait", { session_id: "idle", until: "idle", idle_ms: 100, timeout_ms: 5000 });
 check("wait_idle returns a flushed, current screen", !r.isError && r.text.includes("IDLE-MARKER"), r.text);
 await call("session_kill", { session_id: "idle" });
 
@@ -472,7 +605,7 @@ for (let i = 0; i < 4; i++) {
   await call("session_create", { session_id: `load${i}`, command: "yes ABCDEFGH | head -50000; sleep 60" });
 }
 for (let i = 0; i < 4; i++)
-  await call("session_wait_idle", { session_id: `load${i}`, idle_ms: 120, timeout_ms: 8000 });
+  await call("session_wait", { session_id: `load${i}`, until: "idle", idle_ms: 120, timeout_ms: 8000 });
 r = await call("session_list", {});
 const allAlive = [0, 1, 2, 3].every((i) => new RegExp(`load${i}\\s+pid=\\d+.*running`).test(r.text));
 check("server survives concurrent heavy sessions", !r.isError && allAlive, r.text);
@@ -518,10 +651,12 @@ check(
   !r.isError && r.text.includes("CDE") && r.text.includes("IJK"),
   r.text,
 );
-r = await call("session_assert", { session_id: "cur", expected_text: "GHI", exact_row: 1, exact_col: 0 });
-check("assert exact_col pass", !r.isError, r.text);
-r = await call("session_assert", { session_id: "cur", expected_text: "GHI", exact_row: 1, exact_col: 3 });
-check("assert exact_col fail shows expected vs actual", r.isError && r.text.includes("Expected"), r.text);
+r = await call("session_assert", { session_id: "cur", check: "at", text: "GHI", row: 1, col: 0 });
+check("assert at (row,col) pass", !r.isError, r.text);
+r = await call("session_assert", { session_id: "cur", check: "at", text: "GHI", row: 1, col: 3 });
+check("assert at fail shows expected vs actual", r.isError && r.text.includes("Expected"), r.text);
+r = await call("session_assert", { session_id: "cur", check: "at", text: "GHI", row: 1 });
+check("assert at without col is coached", r.isError && r.text.includes("'col'"), r.text);
 await call("session_kill", { session_id: "cur" });
 
 // --- new: run_test tool (inline) ---

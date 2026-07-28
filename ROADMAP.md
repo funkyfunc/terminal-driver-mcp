@@ -19,6 +19,13 @@ behind them. Nothing below Tier 1 is committed.
 - **Retries / flake quarantine** — `run --retries N` re-runs a failing test; a test that then passes is reported flaky (not failed), the Playwright convention; flaky attempts recorded in the JSON report.
 - **Distribution DX** — `mcpName` in package.json + `server.json` for the [MCP registry](https://registry.modelcontextprotocol.io); README leads with the published `npx` install plus a generic-client config block.
 - **Negative & count assertions** — `session_assert` / the `assert` step take `absent: true` (text is *not* on screen) and `count: N` (exactly N occurrences); `session_wait` / the `wait` step take `absent: true` to block until a pattern *disappears* (the temporal counterpart — wait for a spinner/dialog/row to clear before asserting it's gone, avoiding a redraw race). _Field requests during 0.8.0 verification._
+- **1.0 tool-surface reshape** — one tool per concept with a discriminator, after a design review against flutter-driver-mcp's "focused, LLM-optimized toolset" philosophy:
+  - `session_wait` unified (`until: pattern | pattern_gone | idle | stable_screen | exit`), absorbing `session_wait_idle` and adding process-exit waits; `session_assert` moved from accreted flags to a `check` enum (`contains | absent | count | at | matches` — `matches` adds regex assertions); `session_last_command` folded into `session_wait_command`.
+  - **`session_batch`** — run a write→wait→assert sequence against a LIVE session in one round-trip, reusing the `run_test` step grammar verbatim (the batch is the REPL for the test DSL).
+  - **`session_wait_command` stale-race fix** — a completion is only reported "fresh" after the call starts; a grace window guards the just-typed-command marker race; sessions that can never produce OSC 133 records fail fast with coaching instead of burning the timeout.
+  - **Bracketed paste** (`session_write paste: true` + the `paste` write-step field) — multi-line text as one atomic paste, refused with coaching when the app hasn't enabled DECSET 2004.
+  - **Mouse wheel** — `session_click button: wheel_up | wheel_down` (SGR 64/65, `count` = ticks).
+  - **Error coaching pack** — unknown key names get "did you mean…?" (aliases + edit distance); pattern-wait timeouts and assert failures hint when the target is in scrollback, wrapped across rows, or differs only by case/spacing; idle-wait timeouts point at pattern waits.
 
 ---
 

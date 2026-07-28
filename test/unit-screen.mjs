@@ -74,6 +74,37 @@ function makeSession() {
   );
 }
 
+// regex option: expected is a regex source instead of a literal substring.
+{
+  const session = makeSession();
+  session.term.write("build finished in 4.2s\r\nwarnings: 3");
+  check(
+    "regex matches on screen",
+    (await assertScreen(session, "finished in \\d+\\.\\ds", { regex: true })).ok,
+  );
+  check("regex scoped to a row", (await assertScreen(session, "warnings: \\d+", { regex: true, row: 1 })).ok);
+  check("regex count", (await assertScreen(session, "\\d+", { regex: true, count: 3 })).ok);
+  check("regex mismatch fails", !(await assertScreen(session, "^nope$", { regex: true })).ok);
+  check("regex rejects col", !(await assertScreen(session, "x", { regex: true, row: 0, col: 0 })).ok);
+  const bad = await assertScreen(session, "[", { regex: true });
+  check("invalid regex reported clearly", !bad.ok && bad.message.includes("invalid regex"), bad.message);
+}
+
+// near-miss hints on presence failures: wrap, case, spacing.
+{
+  const session = makeSession();
+  // 80-col terminal: a 90-char line wraps across two rows.
+  session.term.write(`${"x".repeat(75)}WRAPPED-MARKER\r\nHello World\r\na   b`);
+  const wrap = await assertScreen(session, "WRAPPED-MARKER");
+  check("wrap-split text hinted", !wrap.ok && wrap.message.includes("line break"), wrap.message);
+  const kase = await assertScreen(session, "hello world");
+  check("case-only mismatch hinted", !kase.ok && kase.message.includes("capitalization"), kase.message);
+  const space = await assertScreen(session, "a b");
+  check("spacing mismatch hinted", !space.ok && space.message.includes("spacing"), space.message);
+  const none = await assertScreen(session, "zebra");
+  check("no hint when nothing is close", !none.ok && !none.message.includes("Hint:"), none.message);
+}
+
 // snapshotCells: styled runs coalesce, colors/attrs surface, trailing blanks trimmed.
 {
   const session = makeSession();

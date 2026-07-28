@@ -8,9 +8,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { decodeHex, encodeKey } from "./keys.js";
-import { encodeClick, encodeDrag, type MouseButton } from "./mouse.js";
+import { encodeClick, encodeDrag, encodeWheel, type MouseButton, type WheelDirection } from "./mouse.js";
 import { renderPng } from "./render.js";
-import { formatResult, parseTest, runTest } from "./runner.js";
+import { executeSteps, formatResult, parseTest, runTest, StepSchema } from "./runner.js";
 import {
   assertScreen,
   fullTranscript,
@@ -22,6 +22,7 @@ import {
 } from "./screen.js";
 import {
   appCursorMode,
+  bracketedPasteMode,
   commandIsRunning,
   createSession,
   getSession,
@@ -31,6 +32,7 @@ import {
   resizeSession,
   SCROLLBACK,
   sessionInfo,
+  wrapPaste,
   writeToSession,
 } from "./session-manager.js";
 import { recordingToSkeleton } from "./skeleton.js";
@@ -157,8 +159,8 @@ export function registerTools(server: McpServer): void {
           .boolean()
           .default(false)
           .describe(
-            "Interactive-shell only (bash/zsh): inject OSC 133 hooks so session_last_command/session_wait_command " +
-              "report each command's exact output and exit code",
+            "Interactive-shell only (bash/zsh): inject OSC 133 hooks so session_wait_command " +
+              "reports each command's exact output and exit code",
           ),
       },
     },
@@ -179,7 +181,7 @@ export function registerTools(server: McpServer): void {
       const si = session.shellIntegration
         ? "\nShell integration active (OSC 133)."
         : session.shellIntegrationSkipped
-          ? `\nWARNING: shell_integration was requested but not applied — ${session.shellIntegrationSkipped}. session_last_command/session_wait_command will not work.`
+          ? `\nWARNING: shell_integration was requested but not applied — ${session.shellIntegrationSkipped}. session_wait_command will not work.`
           : "";
       return ok(
         `Created session "${session_id}" (pid ${session.pty.pid}).${rec}${si}\n${await screenWithHeader(session_id)}`,
@@ -272,6 +274,8 @@ export function registerTools(server: McpServer): void {
         "in order, then 'raw_hex' bytes if given. Keys are held until the app finishes rendering 'input', so a " +
         "trailing Enter always submits the complete text. If 'expect' is given, waits for that regex to appear " +
         "and returns the matching screen (or errors with the final screen on timeout) — a write+wait in one call. " +
+        "Set paste:true to deliver 'input' as ONE bracketed paste (multi-line text lands atomically: newlines " +
+        "don't submit, REPLs/editors don't auto-indent it) — requires the app to have bracketed paste on. " +
         "Note: submitting a command requires special_keys: ['enter'].",
       inputSchema: {
         session_id: sessionId,
@@ -280,6 +284,13 @@ export function registerTools(server: McpServer): void {
           .array(z.string())
           .default([])
           .describe("Special keys to send after 'input', in order"),
+        paste: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Send 'input' wrapped in bracketed-paste markers (one atomic paste; for multi-line text). " +
+              "The app must have bracketed paste enabled (session_info shows it)",
+          ),
         raw_hex: z
           .string()
           .default("")
@@ -295,15 +306,23 @@ export function registerTools(server: McpServer): void {
         expect_timeout_ms: z.number().int().min(50).max(120000).default(10000),
       },
     },
-    safe(async ({ session_id, input, special_keys, raw_hex, expect, expect_timeout_ms }) => {
+    safe(async ({ session_id, input, special_keys, paste, raw_hex, expect, expect_timeout_ms }) => {
       const session = getSession(session_id);
       if (session.exited) {
         return fail(
           `Session "${session_id}" has exited (code ${session.exitCode}); cannot write. Screen is still readable via session_read.`,
         );
       }
-      const mistake = literalKeyMistake(input);
+      // A paste is literal by declaration — key-name-looking text is intended.
+      const mistake = paste ? null : literalKeyMistake(input);
       if (mistake) return fail(mistake);
+      if (paste && !bracketedPasteMode(session)) {
+        return fail(
+          "paste:true, but the app has not enabled bracketed paste mode (DECSET 2004), so the paste markers " +
+            "would arrive as stray input. Check session_info; if the app never enables it, send the text as " +
+            "plain 'input' instead (newlines will act as Enter).",
+        );
+      }
 
       // Encode everything up front so a bad key name, bad hex, or bad regex
       // fails before any bytes are sent (avoids leaving the terminal half-written).
@@ -321,7 +340,7 @@ export function registerTools(server: McpServer): void {
 
       if (input) {
         const writtenAt = Date.now();
-        writeToSession(session, input);
+        writeToSession(session, paste ? wrapPaste(input) : input);
         // Let the app finish rendering the input before trailing keys land, so
         // a submit key (Enter) can't be processed against half-applied text.
         // Measured from the write, not last output, so an in-flight echo counts.
@@ -347,65 +366,70 @@ export function registerTools(server: McpServer): void {
     "session_wait",
     {
       annotations: READ_ONLY,
-      title: "Wait for pattern on screen",
+      title: "Wait for a session condition",
       description:
-        "Poll the rendered screen until a regex matches (checked every 50ms against the plain-text grid, " +
-        "multiline mode). Returns the screen on match; errors with the final screen on timeout. " +
-        "Use this to synchronize with slow-rendering UIs before acting. Set absent:true to wait for the " +
-        "opposite — until the pattern STOPS matching (e.g. wait for a spinner, dialog, or just-deleted row to " +
-        "disappear before asserting it's gone), avoiding a race with the redraw.",
+        "Block until the session reaches a condition, then return the screen (also returned on timeout, as an " +
+        "error). until:'pattern' (default) polls every 50ms for a regex on the plain-text grid — the reliable " +
+        "primitive when you know what you're waiting for. 'pattern_gone' waits until the regex STOPS matching " +
+        "(spinner/dialog/just-deleted row cleared, without racing the redraw). 'idle' resolves when no output " +
+        "bytes arrive for idle_ms; 'stable_screen' when the rendered text is unchanged for idle_ms (better for " +
+        "apps that emit bytes without visual change) — both are best-effort and time out on continuously-" +
+        "animating UIs. 'exit' resolves when the session's process terminates (e.g. after :q / ctrl+d).",
       inputSchema: {
         session_id: sessionId,
-        pattern: z.string().describe("JavaScript regex source, e.g. 'Password:' or '\\\\$\\\\s*$'"),
-        timeout_ms: z.number().int().min(50).max(120000).default(10000),
-        absent: z
-          .boolean()
-          .default(false)
-          .describe("Wait until the pattern is NO LONGER on screen instead of until it appears"),
-      },
-    },
-    safe(async ({ session_id, pattern, timeout_ms, absent }) => {
-      const session = getSession(session_id);
-      let regex: RegExp;
-      try {
-        regex = new RegExp(pattern, "m");
-      } catch (err) {
-        return fail(`Invalid regex "${pattern}": ${err instanceof Error ? err.message : err}`);
-      }
-      const result = await waitForPattern(session, regex, timeout_ms, absent);
-      const text = `${result.message}\n${statusHeader(session)}\n${result.screen}`;
-      return result.ok ? ok(text) : fail(text);
-    }),
-  );
-
-  server.registerTool(
-    "session_wait_idle",
-    {
-      annotations: READ_ONLY,
-      title: "Wait for terminal to go idle",
-      description:
-        "Wait until the session stabilizes, then return the screen. Mode 'silence' resolves when no output " +
-        "bytes arrive for idle_ms; 'stable_screen' resolves when the rendered text is unchanged for idle_ms " +
-        "(better for apps that emit bytes without visual change). Both are best-effort and will time out on " +
-        "continuously-animating UIs (spinners, progress bars) — prefer session_wait with a pattern when you " +
-        "know what you're waiting for. Timeouts still return the current screen.",
-      inputSchema: {
-        session_id: sessionId,
+        until: z
+          .enum(["pattern", "pattern_gone", "idle", "stable_screen", "exit"])
+          .default("pattern")
+          .describe("The condition to wait for"),
+        pattern: z
+          .string()
+          .optional()
+          .describe(
+            "JavaScript regex source, e.g. 'Password:' or '\\\\$\\\\s*$' (required for 'pattern'/'pattern_gone')",
+          ),
         idle_ms: z
           .number()
           .int()
           .min(20)
           .max(10000)
           .default(80)
-          .describe("Quiet/unchanged period required to consider the terminal stable"),
-        timeout_ms: z.number().int().min(100).max(120000).default(10000),
-        mode: z.enum(["silence", "stable_screen"]).default("silence"),
+          .describe("Quiet/unchanged period for 'idle'/'stable_screen'"),
+        timeout_ms: z.number().int().min(50).max(600000).default(10000),
       },
     },
-    safe(async ({ session_id, idle_ms, timeout_ms, mode }) => {
+    safe(async ({ session_id, until, pattern, idle_ms, timeout_ms }) => {
       const session = getSession(session_id);
+
+      if (until === "pattern" || until === "pattern_gone") {
+        if (pattern === undefined) {
+          return fail(`until:'${until}' needs a 'pattern' regex to watch for.`);
+        }
+        let regex: RegExp;
+        try {
+          regex = new RegExp(pattern, "m");
+        } catch (err) {
+          return fail(`Invalid regex "${pattern}": ${err instanceof Error ? err.message : err}`);
+        }
+        const result = await waitForPattern(session, regex, timeout_ms, until === "pattern_gone");
+        const text = `${result.message}\n${statusHeader(session)}\n${result.screen}`;
+        return result.ok ? ok(text) : fail(text);
+      }
+      if (pattern !== undefined) {
+        return fail(`'pattern' is only used with until:'pattern'/'pattern_gone' (got until:'${until}').`);
+      }
+      if (until === "exit") {
+        if (await waitForExit(session, timeout_ms)) {
+          // Drain output that raced with process exit before reading.
+          await settle(session, SETTLE.drainAfterExit);
+          return ok(`Session exited (code ${session.exitCode}).\n${await screenWithHeader(session_id)}`);
+        }
+        return fail(
+          `Process still running after ${timeout_ms}ms. To end it, send a quit keystroke via ` +
+            `session_write or terminate with session_kill.\n${await screenWithHeader(session_id)}`,
+        );
+      }
       const result =
-        mode === "stable_screen"
+        until === "stable_screen"
           ? await waitForStableScreen(session, idle_ms, timeout_ms)
           : await waitForIdle(session, idle_ms, timeout_ms);
       const text = `${result.message}\n${statusHeader(session)}\n${result.screen}`;
@@ -419,51 +443,66 @@ export function registerTools(server: McpServer): void {
       annotations: READ_ONLY,
       title: "Assert screen state",
       description:
-        "Deterministic test primitive: check that expected_text appears on the visible screen. " +
-        "With exact_row (0-based), the text must appear on that specific row; adding exact_col requires it " +
-        "to start at that exact column. Set absent:true to invert the check — assert the text is NOT on " +
-        "screen (anywhere, or not on exact_row), for proving a row/dialog/item is gone. Set count:N to assert " +
-        "the text appears exactly N times across the screen (for list sizes / duplicate checks); count is " +
-        "whole-screen and cannot combine with exact_row/exact_col/absent. " +
-        "Failures include the actual content with surrounding context.",
+        "Deterministic test primitive: run one check against the visible screen. " +
+        "check:'contains' (default) — text appears anywhere, or on a specific row if 'row' is given. " +
+        "'absent' — text is NOT on screen (anywhere, or not on 'row'), for proving a dialog/row/item is gone. " +
+        "'count' — text occurs exactly 'count' times across the screen (list sizes, duplicate checks). " +
+        "'at' — text starts exactly at ('row','col'), wide-character aware. " +
+        "'matches' — 'text' is a regex the screen must match (optionally scoped to 'row'). " +
+        "Failures include the actual content with context, plus near-miss hints (scrolled off, line-wrapped, " +
+        "case/spacing differences).",
       inputSchema: {
         session_id: sessionId,
-        expected_text: z.string().describe("Substring to check for on screen"),
-        exact_row: z
+        check: z
+          .enum(["contains", "absent", "count", "at", "matches"])
+          .default("contains")
+          .describe("The kind of assertion to run"),
+        text: z.string().describe("Literal substring to check (regex source for check:'matches')"),
+        row: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe("Restrict the check to this 0-based visible row"),
-        exact_col: z
+          .describe("0-based visible row: scopes 'contains'/'absent'/'matches'; required for 'at'"),
+        col: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe(
-            "Require expected_text to start at this 0-based column (needs exact_row; not for absent)",
-          ),
-        absent: z
-          .boolean()
-          .default(false)
-          .describe("Invert: pass when expected_text is NOT present (anywhere, or not on exact_row)"),
+          .describe("0-based column where the text must start (only for check:'at')"),
         count: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe(
-            "Assert expected_text occurs exactly this many times across the screen (whole-screen only)",
-          ),
+          .describe("Expected number of occurrences (required for check:'count')"),
       },
     },
-    safe(async ({ session_id, expected_text, exact_row, exact_col, absent, count }) => {
+    safe(async ({ session_id, check, text, row, col, count }) => {
       const session = getSession(session_id);
-      const result = await assertScreen(session, expected_text, {
-        row: exact_row,
-        col: exact_col,
-        absent,
-        count,
+      // Reject parameter/check mismatches up front with the fix spelled out —
+      // cheaper for the agent than a confusingly-scoped assertion result.
+      if (check === "at" && (row === undefined || col === undefined)) {
+        return fail("check:'at' needs both 'row' and 'col' (the exact start position of the text).");
+      }
+      if (check !== "at" && col !== undefined) {
+        return fail(`'col' is only used with check:'at' (got check:'${check}').`);
+      }
+      if (check === "count" && count === undefined) {
+        return fail("check:'count' needs the 'count' parameter (expected number of occurrences).");
+      }
+      if (check !== "count" && count !== undefined) {
+        return fail(`'count' is only used with check:'count' (got check:'${check}').`);
+      }
+      if (check === "count" && row !== undefined) {
+        return fail("check:'count' is whole-screen; it cannot be scoped to a row.");
+      }
+      const result = await assertScreen(session, text, {
+        row,
+        col,
+        absent: check === "absent",
+        count: check === "count" ? count : undefined,
+        regex: check === "matches",
       });
       return result.ok ? ok(result.message) : fail(result.message);
     }),
@@ -522,6 +561,47 @@ export function registerTools(server: McpServer): void {
   );
 
   server.registerTool(
+    "session_batch",
+    {
+      annotations: MUTATING,
+      title: "Run a step sequence on a live session",
+      description:
+        "Execute a short write→wait→assert sequence against an EXISTING session in ONE call — the same step " +
+        "grammar as run_test, so working steps can be pasted straight into a regression test. Steps run in " +
+        "order; execution stops at the first failing step (assertion steps may set soft:true to record the " +
+        "failure and continue). Returns a per-step report plus the final screen — far fewer round-trips and " +
+        "tokens than issuing each step as its own tool call. " +
+        'Steps: {"write","keys","raw_hex","paste"?} | {"wait":"<regex>","absent"?} | {"idle_ms","mode"?} | ' +
+        '{"assert","row"?,"col"?,"absent"?,"count"?} | {"resize":[c,r]} | {"sleep_ms"} | {"command_exit"} | ' +
+        '{"expect_exit"} | {"match_screen","mask"?}.',
+      inputSchema: {
+        session_id: sessionId,
+        steps: z.array(StepSchema).min(1).max(50).describe("Steps to run, in run_test step format"),
+        screens_dir: z
+          .string()
+          .optional()
+          .describe("Directory for golden snapshots (only needed for match_screen steps)"),
+      },
+    },
+    safe(async ({ session_id, steps, screens_dir }) => {
+      const session = getSession(session_id);
+      const outcome = await executeSteps(session, steps, {
+        testName: `batch:${session_id}`,
+        options: { screensDir: screens_dir },
+      });
+      const report = formatResult({
+        name: `batch on "${session_id}"`,
+        ok: outcome.ok,
+        steps: outcome.steps,
+        failureScreen: outcome.ok ? undefined : await snapshotText(session),
+      });
+      // On success the report has no screen; append one so the agent sees the
+      // final state without a follow-up read.
+      return outcome.ok ? ok(`${report}\n${await screenWithHeader(session_id)}`) : fail(report);
+    }),
+  );
+
+  server.registerTool(
     "run_test",
     {
       annotations: MUTATING,
@@ -531,7 +611,8 @@ export function registerTools(server: McpServer): void {
         "no agent in the loop, also runnable in CI via `terminal-driver-mcp run <file>`. Spec: " +
         '{"name", "command", "cwd"?, "cols"?, "rows"?, "steps": [...]} where each step is one of ' +
         '{"wait": "<regex>", "timeout_ms"?, "absent"?: true} | {"idle_ms": N, "mode"?: "silence"|"stable_screen"} | ' +
-        '{"write": "text", "keys": ["enter", ...]} | {"assert": "text", "row"?: N, "col"?: N, "absent"?: true, "count"?: N} | ' +
+        '{"write": "text", "keys": ["enter", ...], "paste"?: true} | ' +
+        '{"assert": "text", "row"?: N, "col"?: N, "absent"?: true, "count"?: N} | ' +
         '{"resize": [cols, rows]} | {"sleep_ms": N} | {"command_exit": code} | ' +
         '{"match_screen": "name", "mask"?: ["<regex>"]} | {"expect_exit": code}. ' +
         'Any step may carry a "group" label (named section in reports/trace); assertion steps ' +
@@ -606,7 +687,8 @@ export function registerTools(server: McpServer): void {
     }),
   );
 
-  const buttonSchema = z.enum(["left", "middle", "right"]).default("left");
+  const clickButtonSchema = z.enum(["left", "middle", "right", "wheel_up", "wheel_down"]).default("left");
+  const dragButtonSchema = z.enum(["left", "middle", "right"]).default("left");
 
   // Full-screen mouse apps require tracking mode; warn if the app isn't listening.
   function mouseGuard(session: ReturnType<typeof getSession>): string | null {
@@ -623,24 +705,34 @@ export function registerTools(server: McpServer): void {
     "session_click",
     {
       annotations: MUTATING,
-      title: "Click in the terminal",
+      title: "Click or scroll-wheel in the terminal",
       description:
         "Send a mouse click at a 0-based (row, col) as SGR mouse sequences — for TUIs that enable mouse " +
-        "tracking (tree/list clicks, buttons, menus). button: left|middle|right; count: 2 for double-click. " +
+        "tracking (tree/list clicks, buttons, menus). button: left|middle|right, or wheel_up|wheel_down to " +
+        "scroll (lists, pagers); count: 2 for double-click, or the number of wheel ticks. " +
         "Errors if the app has not enabled mouse tracking. Returns the resulting screen.",
       inputSchema: {
         session_id: sessionId,
         row: z.number().int().min(0).describe("0-based row (matches session_read)"),
         col: z.number().int().min(0).describe("0-based column"),
-        button: buttonSchema,
-        count: z.number().int().min(1).max(3).default(1).describe("Click count (2 = double-click)"),
+        button: clickButtonSchema,
+        count: z
+          .number()
+          .int()
+          .min(1)
+          .max(10)
+          .default(1)
+          .describe("Click count (2 = double-click) or wheel ticks"),
       },
     },
     safe(async ({ session_id, row, col, button, count }) => {
       const session = getSession(session_id);
       const blocked = mouseGuard(session);
       if (blocked) return fail(blocked);
-      writeToSession(session, encodeClick(button as MouseButton, row, col, count));
+      const bytes = button.startsWith("wheel_")
+        ? encodeWheel(button as WheelDirection, row, col, count)
+        : encodeClick(button as MouseButton, row, col, count);
+      writeToSession(session, bytes);
       await settle(session, SETTLE.afterWrite);
       return ok(await screenWithHeader(session_id));
     }),
@@ -660,7 +752,7 @@ export function registerTools(server: McpServer): void {
         from_col: z.number().int().min(0),
         to_row: z.number().int().min(0),
         to_col: z.number().int().min(0),
-        button: buttonSchema,
+        button: dragButtonSchema,
       },
     },
     safe(async ({ session_id, from_row, from_col, to_row, to_col, button }) => {
@@ -698,46 +790,32 @@ export function registerTools(server: McpServer): void {
       ? "No command has completed yet in this session."
       : "No OSC 133 command boundaries seen. Create the session with shell_integration:true (interactive bash/zsh).";
 
-  server.registerTool(
-    "session_last_command",
-    {
-      annotations: READ_ONLY,
-      title: "Get the last command's result",
-      description:
-        "Return the most recently completed shell command's exact output, exit code, and duration — no screen " +
-        "parsing or guessing. Requires a session created with shell_integration:true. The token-cheap way to " +
-        "check a command: returns just its output, not the whole screen.",
-      inputSchema: { session_id: sessionId },
-    },
-    safe(async ({ session_id }) => {
-      const session = getSession(session_id);
-      await snapshotText(session); // flush so a just-finished command is recorded
-      const last = session.commands[session.commands.length - 1];
-      if (!last) return fail(noCommandsHint(session));
-      return ok(
-        JSON.stringify(
-          {
-            command: last.command,
-            exit_code: last.exitCode,
-            duration_ms: last.durationMs,
-            output: last.output,
-          },
-          null,
-          2,
-        ),
-      );
-    }),
-  );
+  const commandResult = (session: ReturnType<typeof getSession>): ToolResult => {
+    const last = session.commands[session.commands.length - 1];
+    return ok(
+      JSON.stringify(
+        {
+          command: last.command,
+          exit_code: last.exitCode,
+          duration_ms: last.durationMs,
+          output: last.output,
+        },
+        null,
+        2,
+      ),
+    );
+  };
 
   server.registerTool(
     "session_wait_command",
     {
       annotations: READ_ONLY,
-      title: "Wait for the running command to finish",
+      title: "Get the current/last shell command's result",
       description:
-        "Block until the session's current shell command completes (OSC 133), then return its output, exit code, " +
-        "and duration. The reliable alternative to guessing with session_wait_idle for shell commands. " +
-        "Requires shell_integration:true.",
+        "The reliable way to check a shell command: waits for the in-flight command to complete (OSC 133), " +
+        "then returns its exact output, exit code, and duration — just that command's output, not the whole " +
+        "screen, so it is also the token-cheap option. If the shell is already idle at a prompt, returns the " +
+        "most recent completed command immediately. Requires a session created with shell_integration:true.",
       inputSchema: {
         session_id: sessionId,
         timeout_ms: z.number().int().min(50).max(600000).default(30000),
@@ -745,28 +823,40 @@ export function registerTools(server: McpServer): void {
     },
     safe(async ({ session_id, timeout_ms }) => {
       const session = getSession(session_id);
-      const deadline = Date.now() + timeout_ms;
+      await snapshotText(session); // flush to let a pending C/D marker land
+      // Fail fast instead of burning the whole timeout when this session can
+      // never produce a command record.
+      if (!session.shellIntegration && session.commands.length === 0 && !commandIsRunning(session)) {
+        return fail(noCommandsHint(session));
+      }
+      // Stale-result guard: a command completing AFTER this call starts is
+      // always fresh; returning the pre-existing latest is only safe once a
+      // short grace window has passed without a start (C) marker appearing —
+      // otherwise "write cmd, call wait" can race the marker and return the
+      // PREVIOUS command's result as if it were the new one.
+      const entryCount = session.commands.length;
+      const GRACE_MS = Math.min(600, timeout_ms);
+      const start = Date.now();
       for (;;) {
         await snapshotText(session); // flush to let a pending C/D marker land
-        // A command is in-flight once its C marker exists and until D clears it.
+        if (session.commands.length > entryCount) return commandResult(session);
         const running = commandIsRunning(session);
-        if (!running && session.commands.length > 0) {
-          const last = session.commands[session.commands.length - 1];
-          return ok(
-            JSON.stringify(
-              {
-                command: last.command,
-                exit_code: last.exitCode,
-                duration_ms: last.durationMs,
-                output: last.output,
-              },
-              null,
-              2,
-            ),
-          );
+        const elapsed = Date.now() - start;
+        if (!running) {
+          if (session.exited) {
+            // No new command can ever start; return what exists, or fail now.
+            if (entryCount > 0) return commandResult(session);
+            return fail(
+              `Session exited (code ${session.exitCode}) without completing a command.\n${await screenWithHeader(session_id)}`,
+            );
+          }
+          if (elapsed >= GRACE_MS && entryCount > 0) return commandResult(session);
         }
-        if (Date.now() >= deadline) {
-          return fail(`No command completed within ${timeout_ms}ms.\n${await screenWithHeader(session_id)}`);
+        if (elapsed >= timeout_ms) {
+          const hint = session.commands.length === 0 ? `${noCommandsHint(session)}\n` : "";
+          return fail(
+            `No command completed within ${timeout_ms}ms.\n${hint}${await screenWithHeader(session_id)}`,
+          );
         }
         await new Promise((r) => setTimeout(r, 50));
       }

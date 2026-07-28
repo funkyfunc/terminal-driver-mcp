@@ -39,15 +39,14 @@ Keep using the built-in terminal for `npm test` and `git status`. Reach for this
 | `session_create(session_id, command?, cwd?, cols=120, rows=30)` | Spawn a persistent PTY session (command via your shell, or an interactive shell) |
 | `session_read(session_id, format=text\|raw\|json, scrollback_lines=0)` | Snapshot the rendered screen; `json` returns a structured cell model (colors, styles, cursor, OSC 8 links); `scrollback_lines` also returns output that scrolled off the top |
 | `session_screenshot(session_id, scrollback_lines=0)` | Render the screen (colors, box-drawing, cursor) to a PNG image for vision models |
-| `session_write(session_id, input?, special_keys[]?, raw_hex?, expect?)` | Type text, special keys (enter, escape, arrows, ctrl+c, f-keys, chords, …), and/or raw bytes; with `expect` it also waits for a regex — a write+wait in one call |
-| `session_click(session_id, row, col, button?, count?)` | Send a mouse click (SGR) at a cell — for TUIs with mouse tracking; errors if the app isn't listening |
+| `session_write(session_id, input?, special_keys[]?, paste?, raw_hex?, expect?)` | Type text, special keys (enter, escape, arrows, ctrl+c, f-keys, chords, …), and/or raw bytes; `paste:true` delivers `input` as one atomic bracketed paste; with `expect` it also waits for a regex — a write+wait in one call |
+| `session_click(session_id, row, col, button?, count?)` | Mouse click or scroll wheel (SGR) at a cell — `button` also takes `wheel_up`/`wheel_down` (`count` = ticks); errors if the app isn't listening |
 | `session_drag(session_id, from_row, from_col, to_row, to_col, button?)` | Mouse drag (press → move → release) for dividers, resize handles, selections |
 | `session_info(session_id)` | Report what the app enabled: mouse tracking, bracketed paste, alt screen, cursor keys/keypad, insert, foreground process, dims |
-| `session_last_command(session_id)` | The last shell command's exact output, exit code, and duration (needs `shell_integration`) |
-| `session_wait_command(session_id, timeout_ms)` | Block until the running shell command finishes, then return its result (needs `shell_integration`) |
-| `session_wait(session_id, pattern, timeout_ms, absent?)` | Poll until a regex matches the screen; `absent:true` waits until it *stops* matching (spinner/dialog/row gone) |
-| `session_wait_idle(session_id, idle_ms=80, timeout_ms, mode=silence\|stable_screen)` | Wait until output quiesces (byte silence) or the rendered screen stops changing |
-| `session_assert(session_id, expected_text, exact_row?, exact_col?, absent?, count?)` | Pass/fail screen assertion with contextual diff; `exact_col` pins the text to a starting column; `absent:true` asserts the text is *not* on screen; `count:N` asserts exactly N occurrences |
+| `session_wait_command(session_id, timeout_ms)` | Wait for the in-flight shell command to finish, then return its exact output/exit code/duration; returns the last completed command if the shell is idle (needs `shell_integration`) |
+| `session_wait(session_id, until=pattern\|pattern_gone\|idle\|stable_screen\|exit, pattern?, idle_ms?, timeout_ms)` | One synchronization tool: wait for a regex to appear or disappear, for output silence, for a stable rendered screen, or for process exit |
+| `session_assert(session_id, check=contains\|absent\|count\|at\|matches, text, row?, col?, count?)` | Pass/fail screen assertion with contextual diff and near-miss hints; one `check` discriminator instead of a pile of flags |
+| `session_batch(session_id, steps[], screens_dir?)` | Run a write→wait→assert step sequence against a **live** session in one call — same step grammar as `run_test`, per-step results, stops on first hard failure |
 | `session_region(session_id, row, col, width, height)` | Extract a rectangle of the screen (a pane, status bar, or widget) |
 | `session_resize(session_id, cols, rows)` | Resize PTY + emulator (SIGWINCH reflow) |
 | `session_list()` | List sessions with pid/status/age |
@@ -57,19 +56,58 @@ Keep using the built-in terminal for `npm test` and `git status`. Reach for this
 
 Every screen header includes the cursor position (`cursor row:col`, 0-based, matching screen row numbering).
 
+### Migrating from 0.x
+
+1.0 reshaped the tool surface so every concept has exactly one home ([design notes](ROADMAP.md)). JSON **test files are untouched** — only tool schemas changed:
+
+| 0.x | 1.0 |
+|---|---|
+| `session_wait(pattern, absent: true)` | `session_wait(until: "pattern_gone", pattern)` |
+| `session_wait_idle(mode: "silence" \| "stable_screen")` | `session_wait(until: "idle" \| "stable_screen")` |
+| — | `session_wait(until: "exit")` *(new)* |
+| `session_assert(expected_text, exact_row, exact_col)` | `session_assert(text, check: "at", row, col)` |
+| `session_assert(…, absent: true)` / `(…, count: N)` | `session_assert(…, check: "absent")` / `(…, check: "count", count: N)` |
+| — | `session_assert(check: "matches")` *(new: regex)* |
+| `session_last_command(…)` | `session_wait_command(…)` (returns the last command immediately when the shell is idle) |
+
 Arrow keys are DECCKM-aware: when a full-screen app (vim, less) enables application cursor mode, arrows are sent as SS3 sequences automatically. Control chords use the byte the target understands: `ctrl+<letter>` and symbol chords (`ctrl+]`, `ctrl+\`) send their legacy C0 code (works everywhere), while chords with no legacy encoding (`shift+escape`, `ctrl+enter`, ...) fall back to CSI-u (fixterms/kitty). For anything no key name covers, `raw_hex` sends arbitrary bytes (e.g. `raw_hex: "1b5b41"` for `ESC[A`).
 
-Typing a key name as literal text is a common mistake, so `input` values containing `{enter}`-style names or backslash escapes like `\r` are rejected with a hint pointing at `special_keys`.
+Typing a key name as literal text is a common mistake, so `input` values containing `{enter}`-style names or backslash escapes like `\r` are rejected with a hint pointing at `special_keys` — and an unknown key name gets a "did you mean…?" suggestion (`pgup` → `page_up`).
+
+Multi-line text belongs in a bracketed paste: `session_write(input: "...", paste: true)` wraps the text in paste markers so REPLs and editors receive it as **one atomic paste** — newlines don't submit, auto-indent doesn't mangle it. Requires the app to have bracketed paste enabled (`session_info` shows it); if it hasn't, the tool refuses rather than leaking markers as stray input.
 
 The emulator also answers terminal queries (DA1, DSR cursor reports, ...) on the application's behalf, so query-happy TUIs (neovim and friends) behave as they would in a real terminal instead of hanging on a probe.
 
-Mouse events (`session_click`, `session_drag`) are sent as SGR sequences and only when the app has enabled mouse tracking — otherwise the tools return a helpful error rather than injecting stray input. Use `session_info` to see the current tracking mode and other flags.
+Mouse events (`session_click`, `session_drag`) are sent as SGR sequences and only when the app has enabled mouse tracking — otherwise the tools return a helpful error rather than injecting stray input. `session_click` with `button: "wheel_up"`/`"wheel_down"` scrolls (one SGR wheel event per `count` tick) for pagers, lists, and fzf-style pickers. Use `session_info` to see the current tracking mode and other flags.
 
-### Synchronization caveats
+### Synchronization
 
-Both `session_wait_idle` modes are best-effort: continuously-animating UIs (spinners, progress bars, htop's periodic redraws) never go quiet, so those calls run to timeout — which still returns the current screen. When you know what you're waiting for, `session_wait` with a pattern is the reliable primitive. `stable_screen` mode helps with apps that emit bytes without visual change (cursor pings, identical redraws).
+`session_wait` is the single synchronization tool; `until` picks the condition:
+
+- `pattern` (default) — a regex appears on screen: the reliable primitive when you know what you're waiting for.
+- `pattern_gone` — the regex *stops* matching: wait for a spinner/dialog/just-deleted row to clear without racing the redraw.
+- `idle` / `stable_screen` — output goes quiet / the rendered text stops changing for `idle_ms`. Best-effort: continuously-animating UIs (spinners, progress bars, htop) never settle, so these run to timeout — which still returns the current screen, plus a hint to switch to a pattern wait.
+- `exit` — the session's process terminates (after `:q`, `ctrl+d`, …).
+
+Timed-out pattern waits coach recovery: if the pattern actually matched in scrollback (it scrolled off) or matches ignoring case, the error says so.
 
 When a session's screen header says lines have scrolled off (e.g. after a long build), read them back with `session_read(scrollback_lines: N)` — up to 1000 lines are retained.
+
+## Batched steps against a live session
+
+`session_batch` runs a short write→wait→assert sequence against an **existing** session in one round-trip, using the exact `run_test` step grammar (including `soft:` and `group:`):
+
+```
+session_batch(session_id: "vim", steps: [
+  { "write": ":%s/foo/bar/g", "keys": ["enter"] },
+  { "wait": "substitutions" },
+  { "assert": "bar", "row": 0 },
+  { "assert": "foo", "absent": true }
+])
+  → per-step ✓/✗ report + one final screen
+```
+
+Execution stops at the first hard failure. Because the grammar is shared, a step sequence that works interactively pastes directly into a `run_test` script — `session_batch` is the REPL for the test DSL.
 
 ## Semantic command boundaries (OSC 133)
 
@@ -82,7 +120,7 @@ session_wait_command(session_id: "sh")   // blocks until npm test finishes
   → { command: "npm test", exit_code: 1, duration_ms: 8423, output: "…just the test output…" }
 ```
 
-No blind waits, no CPU heuristics, no marker collisions — and `session_last_command` returns **only that command's output** instead of the whole screen, which is far cheaper in tokens. In `run_test` scripts, a `{ "command_exit": 0 }` step asserts the last command's exit code. Requires bash ≥ 4.4 or zsh; on shells without support the session still works, just without command tracking.
+No blind waits, no CPU heuristics, no marker collisions — and the result contains **only that command's output** instead of the whole screen, which is far cheaper in tokens. If the shell is already idle at a prompt, `session_wait_command` returns the most recent completed command immediately (a short grace window guards against returning a stale result while a just-typed command's start marker is still in flight). On a session that can never produce command records it fails fast with the fix instead of burning the timeout. In `run_test` scripts, a `{ "command_exit": 0 }` step asserts the last command's exit code. Requires bash ≥ 4.4 or zsh; on shells without support the session still works, just without command tracking.
 
 ## Structured & visual snapshots
 
@@ -122,7 +160,7 @@ or ad-hoc via the `run_test` tool. Example script:
 }
 ```
 
-Step types: `{"wait": "<regex>", "absent"?}` (`absent:true` waits until the pattern *disappears*), `{"idle_ms": N, "mode"?: "silence"|"stable_screen"}`, `{"write": "text", "keys": [...], "raw_hex"?}`, `{"assert": "text", "row"?, "col"?, "absent"?, "count"?}` (`absent:true` asserts the text is *not* on screen; `count:N` asserts exactly N occurrences), `{"match_screen": "name", "mask"?: ["<regex>"]}`, `{"resize": [cols, rows]}`, `{"sleep_ms": N}`, `{"command_exit": N}` (with `"shell_integration": true`), `{"expect_exit": code}`. Execution stops at the first failing step and the report includes the final screen.
+Step types: `{"wait": "<regex>", "absent"?}` (`absent:true` waits until the pattern *disappears*), `{"idle_ms": N, "mode"?: "silence"|"stable_screen"}`, `{"write": "text", "keys": [...], "raw_hex"?, "paste"?}` (`paste:true` sends the text as one bracketed paste), `{"assert": "text", "row"?, "col"?, "absent"?, "count"?}` (`absent:true` asserts the text is *not* on screen; `count:N` asserts exactly N occurrences), `{"match_screen": "name", "mask"?: ["<regex>"]}`, `{"resize": [cols, rows]}`, `{"sleep_ms": N}`, `{"command_exit": N}` (with `"shell_integration": true`), `{"expect_exit": code}`. Execution stops at the first failing step and the report includes the final screen. The same steps run against a live session via `session_batch`.
 
 **Soft assertions & grouping.** Any assertion step (`assert`, `match_screen`, `command_exit`, `expect_exit`) can set `"soft": true` — a soft failure is recorded and still fails the test, but execution continues instead of stopping, so a single run surfaces every problem. Any step can carry a `"group": "label"`; consecutive steps sharing a label render as a named section in the CLI output, the trace viewer, and the reporters.
 
@@ -180,9 +218,11 @@ claude mcp add terminal --scope user -- node "$(pwd)/dist/index.js"
 ## Recommended agent workflow (Assert–Act–Assert)
 
 1. **Observe** — `session_read` for a fresh snapshot.
-2. **Verify** — `session_wait` / `session_wait_idle` until the expected state is visible and stable.
+2. **Verify** — `session_wait` (a pattern when you know it; `until:"idle"` otherwise) until the expected state is visible and stable.
 3. **Act** — `session_write` with precise keystrokes.
 4. **Re-verify** — `session_assert` that the action produced the expected change before proceeding.
+
+Once a flow is understood, collapse the loop: `session_batch` runs act+verify sequences in one call.
 
 ## Development
 
