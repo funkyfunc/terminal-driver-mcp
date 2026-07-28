@@ -43,10 +43,15 @@ export function renderTrace(result: TestResult): string {
   const failIdx = result.steps.findIndex((s) => !s.ok);
   const selected = failIdx >= 0 ? failIdx : result.steps.length - 1;
 
+  let lastGroup: string | undefined;
   const buttons = result.steps
     .map((s, i) => {
-      const mark = s.ok ? "✓" : "✗";
-      return `<button class="step ${s.ok ? "ok" : "bad"}" data-i="${i}">
+      // A group header row precedes the first step of each named section.
+      const header = s.group !== lastGroup && s.group ? `<div class="group">${esc(s.group)}</div>` : "";
+      lastGroup = s.group;
+      const cls = s.ok ? "ok" : s.soft ? "soft" : "bad";
+      const mark = s.ok ? "✓" : s.soft ? "⚠" : "✗";
+      return `${header}<button class="step ${cls}" data-i="${i}">
         <span class="mark">${mark}</span>
         <span class="desc">${esc(s.desc)}</span>
         <span class="ms">${s.elapsedMs}ms</span>
@@ -57,8 +62,10 @@ export function renderTrace(result: TestResult): string {
   const panels = result.steps
     .map((s, i) => {
       const detail = s.ok ? "" : `<pre class="detail">${esc(s.detail)}</pre>`;
+      const cls = s.ok ? "ok" : s.soft ? "soft" : "bad";
+      const label = s.ok ? "passed" : s.soft ? "failed (soft)" : "failed";
       return `<div class="panel" data-i="${i}" ${i === selected ? "" : "hidden"}>
-        <h2>Step ${i + 1}: ${esc(s.desc)} <span class="${s.ok ? "ok" : "bad"}">${s.ok ? "passed" : "failed"}</span></h2>
+        <h2>Step ${i + 1}: ${esc(s.desc)} <span class="${cls}">${label}</span></h2>
         ${detail}
         ${screenToHtml(s.screen)}
       </div>`;
@@ -81,11 +88,14 @@ export function renderTrace(result: TestResult): string {
   .step:hover { background:#161826; }
   .step.active { background:#1e2136; }
   .step .mark { width:14px; } .step.ok .mark { color:#7ee2a8; } .step.bad .mark { color:#ff9aa2; }
+  .step.soft .mark { color:#ffcf70; }
   .step .desc { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .step .ms { color:#6b6f85; }
+  .group { padding:8px 12px 4px; font-size:11px; font-weight:700; letter-spacing:.06em;
+           text-transform:uppercase; color:#8b8fa8; background:#111321; border-bottom:1px solid #1a1b28; }
   .view { flex:1; overflow:auto; padding:16px; }
   .view h2 { font-size:14px; font-weight:600; margin:0 0 10px; }
-  .view h2 .ok { color:#7ee2a8; } .view h2 .bad { color:#ff9aa2; }
+  .view h2 .ok { color:#7ee2a8; } .view h2 .bad { color:#ff9aa2; } .view h2 .soft { color:#ffcf70; }
   .detail { background:#161826; border:1px solid #2a2d44; border-radius:6px; padding:10px; white-space:pre-wrap;
             color:#ffb4ba; margin:0 0 12px; }
   .screen { display:inline-block; background:${DEFAULT_BG}; padding:10px; border-radius:6px;

@@ -24,13 +24,21 @@ import { waitForExit, waitForIdle, waitForPattern, waitForStableScreen } from ".
 
 const timeoutMs = z.number().int().min(50).max(600000);
 
+// Optional section label carried by any step; consecutive steps sharing a label
+// render as a named group in reports and the trace viewer (test.step, flattened).
+const group = z.string().optional().describe("Section label to group this step under in reports");
+// Assertion steps may be soft: a soft failure is recorded and fails the test
+// overall, but execution continues instead of stopping at that step.
+const soft = z.boolean().default(false).describe("Record the failure and keep going (still fails the test)");
+
 const StepSchema = z.union([
-  z.object({ wait: z.string(), timeout_ms: timeoutMs.default(10000) }).strict(),
+  z.object({ wait: z.string(), timeout_ms: timeoutMs.default(10000), group }).strict(),
   z
     .object({
       idle_ms: z.number().int().min(20).max(10000),
       timeout_ms: timeoutMs.default(10000),
       mode: z.enum(["silence", "stable_screen"]).default("silence"),
+      group,
     })
     .strict(),
   z
@@ -38,6 +46,7 @@ const StepSchema = z.union([
       write: z.string().default(""),
       keys: z.array(z.string()).default([]),
       raw_hex: z.string().default(""),
+      group,
     })
     .strict()
     .refine((s) => s.write !== "" || s.keys.length > 0 || s.raw_hex !== "", {
@@ -48,15 +57,20 @@ const StepSchema = z.union([
       assert: z.string(),
       row: z.number().int().min(0).optional(),
       col: z.number().int().min(0).optional(),
+      soft,
+      group,
     })
     .strict(),
   z
-    .object({ resize: z.tuple([z.number().int().min(20).max(500), z.number().int().min(5).max(200)]) })
+    .object({
+      resize: z.tuple([z.number().int().min(20).max(500), z.number().int().min(5).max(200)]),
+      group,
+    })
     .strict(),
-  z.object({ sleep_ms: z.number().int().min(1).max(60000) }).strict(),
-  z.object({ command_exit: z.number().int() }).strict(), // assert last shell command's exit code (needs shell_integration)
-  z.object({ match_screen: z.string(), mask: z.array(z.string()).default([]) }).strict(), // golden snapshot: compare the whole screen to a stored file (regenerate with --update)
-  z.object({ expect_exit: z.number().int(), timeout_ms: timeoutMs.default(30000) }).strict(),
+  z.object({ sleep_ms: z.number().int().min(1).max(60000), group }).strict(),
+  z.object({ command_exit: z.number().int(), soft, group }).strict(), // assert last shell command's exit code (needs shell_integration)
+  z.object({ match_screen: z.string(), mask: z.array(z.string()).default([]), soft, group }).strict(), // golden snapshot: compare the whole screen to a stored file (regenerate with --update)
+  z.object({ expect_exit: z.number().int(), timeout_ms: timeoutMs.default(30000), soft, group }).strict(),
 ]);
 
 export const TestSchema = z
@@ -82,8 +96,13 @@ export interface StepResult {
   ok: boolean;
   detail: string;
   elapsedMs: number;
+  group?: string; // section label (test.step grouping)
+  soft?: boolean; // a failed soft assertion: recorded, but execution continued
   screen?: CellSnapshot; // captured after the step when tracing is on
 }
+
+/** A soft assertion records its failure but does not stop the run. */
+const isSoft = (step: Step): boolean => "soft" in step && step.soft === true;
 
 export interface TestResult {
   name: string;
@@ -236,12 +255,29 @@ export async function runTest(spec: TestSpec, options: RunOptions = {}): Promise
         outcome = { ok: false, detail: err instanceof Error ? err.message : String(err) };
       }
       const screen = options.trace ? await snapshotCells(session) : undefined;
-      steps.push({ index, desc: describeStep(step), ...outcome, elapsedMs: Date.now() - start, screen });
-      if (!outcome.ok) {
+      const soft = isSoft(step);
+      steps.push({
+        index,
+        desc: describeStep(step),
+        ...outcome,
+        elapsedMs: Date.now() - start,
+        group: step.group,
+        soft: soft && !outcome.ok ? true : undefined,
+        screen,
+      });
+      // A hard failure stops the run; a soft failure is recorded and we continue.
+      if (!outcome.ok && !soft) {
         return finish({ name: spec.name, ok: false, steps, failureScreen: await snapshotText(session) });
       }
     }
-    return finish({ name: spec.name, ok: true, steps });
+    // Ran every step: fail overall iff any (soft) assertion failed along the way.
+    const ok = steps.every((s) => s.ok);
+    return finish({
+      name: spec.name,
+      ok,
+      steps,
+      failureScreen: ok ? undefined : await snapshotText(session),
+    });
   } finally {
     await killSession(id);
   }
@@ -249,10 +285,17 @@ export async function runTest(spec: TestSpec, options: RunOptions = {}): Promise
 
 export function formatResult(result: TestResult): string {
   const lines = [`${result.ok ? "PASS" : "FAIL"}: ${result.name}`];
+  let lastGroup: string | undefined;
   for (const step of result.steps) {
-    const mark = step.ok ? "✓" : "✗";
+    if (step.group !== lastGroup) {
+      if (step.group) lines.push(`  ▸ ${step.group}`);
+      lastGroup = step.group;
+    }
+    // ✓ passed, ✗ hard failure, ⚠ soft failure (recorded, run continued).
+    const mark = step.ok ? "✓" : step.soft ? "⚠" : "✗";
+    const tag = step.soft ? " (soft)" : "";
     const detail = step.ok ? "" : `\n      ${step.detail.split("\n").join("\n      ")}`;
-    lines.push(`  ${mark} step ${step.index + 1}: ${step.desc} (${step.elapsedMs}ms)${detail}`);
+    lines.push(`  ${mark} step ${step.index + 1}: ${step.desc}${tag} (${step.elapsedMs}ms)${detail}`);
   }
   if (result.failureScreen !== undefined) {
     lines.push(

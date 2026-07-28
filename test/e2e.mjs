@@ -624,4 +624,36 @@ try {
   check("trace: --trace writes a self-contained HTML trace", false, String(err.stdout || err));
 }
 
+// --- soft assertions + grouping: a soft failure records but keeps running ---
+const softFile = join(REC_DIR, "soft-test.json");
+writeFileSync(
+  softFile,
+  JSON.stringify({
+    name: "soft cli",
+    command: "printf 'AAA\\nBBB\\n'; sleep 60",
+    cols: 40,
+    rows: 6,
+    steps: [
+      { wait: "AAA", group: "arrange" },
+      { assert: "ZZZ-missing", soft: true, group: "assert" },
+      { assert: "BBB", group: "assert" },
+    ],
+  }),
+);
+try {
+  execFileSync("node", [SERVER, "run", softFile], { encoding: "utf8" });
+  check("soft: run with a soft failure exits nonzero", false, "expected nonzero exit");
+} catch (err) {
+  const out = String(err.stdout || "");
+  check(
+    "soft: fails overall but runs every step (soft failure does not stop)",
+    err.status === 1 &&
+      out.includes("FAIL: soft cli") &&
+      /\(soft\)/.test(out) && // the soft assertion is marked
+      /step 3:.*BBB/.test(out) && // the step *after* the soft failure still ran
+      out.includes("▸ assert"), // group header rendered
+    out,
+  );
+}
+
 process.exit(summary("E2E"));

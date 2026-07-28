@@ -505,8 +505,10 @@ export function registerTools(server: McpServer): void {
         '{"write": "text", "keys": ["enter", ...]} | {"assert": "text", "row"?: N, "col"?: N} | ' +
         '{"resize": [cols, rows]} | {"sleep_ms": N} | {"command_exit": code} | ' +
         '{"match_screen": "name", "mask"?: ["<regex>"]} | {"expect_exit": code}. ' +
-        "Execution stops at the first failing step and includes the final screen. " +
-        "match_screen (golden snapshots) needs screens_dir; regenerate with update_snapshots:true.",
+        'Any step may carry a "group" label (named section in reports/trace); assertion steps ' +
+        '(assert/match_screen/command_exit/expect_exit) may set "soft": true to record a failure and keep ' +
+        "going instead of stopping. Execution otherwise stops at the first (hard) failing step and includes " +
+        "the final screen. match_screen (golden snapshots) needs screens_dir; regenerate with update_snapshots:true.",
       inputSchema: {
         file: z.string().optional().describe("Path to a JSON test file"),
         test_json: z.string().optional().describe("Inline JSON test spec (alternative to file)"),

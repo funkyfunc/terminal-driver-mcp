@@ -17,8 +17,16 @@ const results = [
       name: "suite A",
       ok: false,
       steps: [
-        { index: 0, desc: "wait /x/", ok: true, detail: "matched", elapsedMs: 10 },
-        { index: 1, desc: 'assert "y"', ok: false, detail: 'FAIL: "y" not found\ncontext', elapsedMs: 5 },
+        { index: 0, desc: "wait /x/", ok: true, detail: "matched", elapsedMs: 10, group: "setup" },
+        {
+          index: 1,
+          desc: 'assert "y"',
+          ok: false,
+          detail: 'FAIL: "y" not found\ncontext',
+          elapsedMs: 5,
+          group: "checks",
+          soft: true,
+        },
       ],
     },
   },
@@ -33,6 +41,8 @@ check(
 check("junit has a testcase per step", (xml.match(/<testcase /g) || []).length === 2, xml);
 check("junit emits a failure element", xml.includes("<failure ") && xml.includes("not found"), "no failure");
 check("junit escapes quotes in names", xml.includes("&quot;y&quot;"), "quotes not escaped");
+check("junit puts the group in the classname", xml.includes("suite A › checks"), "group not in classname");
+check("junit marks a soft failure in the message", xml.includes("[soft]"), "soft not marked");
 
 const json = JSON.parse(jsonReport(results));
 check(
@@ -41,6 +51,11 @@ check(
   JSON.stringify(json[0]),
 );
 check("json omits heavy cell captures", !("screen" in json[0].steps[0]), "screen leaked into json");
+check(
+  "json carries group and soft",
+  json[0].steps[0].group === "setup" && json[0].steps[1].soft === true,
+  JSON.stringify(json[0].steps),
+);
 
 console.log(failures === 0 ? "\nREPORT UNIT TESTS PASSED" : `\n${failures} REPORT UNIT FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

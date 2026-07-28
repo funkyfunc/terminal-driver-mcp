@@ -22,10 +22,14 @@ export function junitReport(results: FileResult[]): string {
     const cases = result.steps
       .map((s) => {
         const time = (s.elapsedMs / 1000).toFixed(3);
+        // Group label becomes the JUnit classname suffix (rendered as a nested
+        // node by most CI viewers); soft failures are annotated in the message.
+        const classname = xmlEscape(s.group ? `${result.name} › ${s.group}` : result.name);
         const name = xmlEscape(`step ${s.index + 1}: ${s.desc}`);
-        const open = `      <testcase name="${name}" classname="${xmlEscape(result.name)}" time="${time}">`;
+        const open = `      <testcase name="${name}" classname="${classname}" time="${time}">`;
         if (s.ok) return `${open}</testcase>`;
-        return `${open}\n        <failure message="${xmlEscape(s.detail.split("\n")[0])}">${xmlEscape(s.detail)}</failure>\n      </testcase>`;
+        const msg = xmlEscape(`${s.soft ? "[soft] " : ""}${s.detail.split("\n")[0]}`);
+        return `${open}\n        <failure message="${msg}">${xmlEscape(s.detail)}</failure>\n      </testcase>`;
       })
       .join("\n");
     return `  <testsuite name="${xmlEscape(result.name)}" tests="${result.steps.length}" failures="${failures}" file="${xmlEscape(file)}">\n${cases}\n  </testsuite>`;
@@ -41,12 +45,14 @@ export function jsonReport(results: FileResult[]): string {
     file,
     name: result.name,
     ok: result.ok,
-    steps: result.steps.map(({ index, desc, ok, detail, elapsedMs }) => ({
+    steps: result.steps.map(({ index, desc, ok, detail, elapsedMs, group, soft }) => ({
       index,
       desc,
       ok,
       detail,
       elapsedMs,
+      ...(group ? { group } : {}),
+      ...(soft ? { soft } : {}),
     })),
   }));
   return `${JSON.stringify(trimmed, null, 2)}\n`;
