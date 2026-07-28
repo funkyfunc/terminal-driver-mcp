@@ -15,17 +15,21 @@ behind them. Nothing below Tier 1 is committed.
 - **Golden screen snapshots** — `match_screen` step + `run --update`, volatile-region masking, readable row diffs.
 - **Self-contained HTML trace viewer** — `run --trace` writes one inlined `trace.html` per run (step list + per-step rendered screen, defaults to the failing step); doubles as the failure artifact.
 - **CI reporters** — `run --junit <path>` / `--json <path>`.
+- **Soft assertions + step grouping** — assertion steps take `soft: true` (record and continue, still fails the test); any step takes a `group` label rendered as a named section in the CLI output, trace viewer, and reporters.
+- **Retries / flake quarantine** — `run --retries N` re-runs a failing test; a test that then passes is reported flaky (not failed), the Playwright convention; flaky attempts recorded in the JSON report.
+- **Distribution DX** — `mcpName` in package.json + `server.json` for the [MCP registry](https://registry.modelcontextprotocol.io); README leads with the published `npx` install plus a generic-client config block.
 
 ---
 
-## Tier 2 — Reliability, CI adoption, and the safety headline
+## Tier 2 — Reliability & CI adoption
 
-- **Auto-waiting baked into actions** — promote `wait-for-idle`/pattern to implicit preconditions before each keystroke/click, and make screen assertions auto-retry to a timeout. Kills the dominant flake source. _Playwright actionability / Cypress retry-ability; TUA-Bench shows pass@5 reliability is the field's weak spot._
-- **`test.step` grouping + soft assertions** — collapsible named phases in the trace/report; `expect.soft` collects all failures in a run. _Playwright steps/soft._
-- **Retries + flake detection/quarantine** — `--retries`, tri-state passed/flaky/failed, **fresh PTY per retry** (a wedged terminal is our #1 flake source), quarantine bucket. _Playwright test-retries._
-- **ANSI / escape-sequence injection sanitization** — a snapshot mode that neutralizes dangerous escapes (hidden-text `\033[8m`, OSC exfil/clipboard triggers) before returning to the model, with a raw-vs-sanitized toggle and a flagged-sequence report. Novel — no terminal MCP does it. _Validated live threat: Trail of Bits / Bright Security "ANSI-in-MCP", 2026 macOS DNS-exfil-via-escape exploit; #1 concern on the HN "Show HN: tui-use" thread._
-- **Structured tool output** (`outputSchema` + `structuredContent`) on `list_sessions`, `session_read`, `session_wait`, `session_create` — typed results instead of JSON-in-text so agents can chain calls reliably. Keep the text block for compatibility.
-- **Distribution DX** — publish to the MCP Registry (`mcpName` in package.json + `server.json`), multi-client install snippets/badges in the README (`claude mcp add`, VS Code/Cursor/etc.), tool catalog. _playwright-mcp is the model; the registry is the discovery layer directories pull from._
+- **Auto-waiting baked into actions** — promote `wait-for-idle`/pattern to implicit preconditions before each keystroke/click, and make screen assertions auto-retry to a timeout. Kills the dominant flake source. Deferred deliberately: it changes action *timing semantics*, so it needs an explicit opt-in and careful defaults rather than an unsupervised change. _Playwright actionability / Cypress retry-ability; TUA-Bench shows pass@5 reliability is the field's weak spot._
+- **Structured tool output** (`outputSchema` + `structuredContent`) on `session_last_command`, `session_read`, `session_info`, `session_list` — typed results instead of JSON-in-text so agents can chain calls reliably. Keep the text block for compatibility. Deferred: an `outputSchema` is a hard runtime contract the SDK validates on every call, so it wants accurate per-tool schemas and its own focused pass.
+- **Publish `server.json` to the MCP registry** — the manifest exists; the actual `mcp-publisher` submission needs the maintainer's GitHub OIDC auth (a user-only step, like npm trusted publishing).
+
+### Considered and dropped
+
+- **ANSI / escape-sequence injection sanitization** — dropped after checking our capture path: all plain-text/JSON output (`session_read text`/`json`, `session_last_command`, command records) comes from xterm's `translateToString`, which returns rendered cell glyphs — the emulator has already consumed escape sequences into cell attributes, so no raw ANSI reaches the model. The only raw path is `session_read format: "raw"`, which is intentional and labeled. A sanitizer there would be dead code that could corrupt legitimate box-drawing. Revisit only if a concrete bypass is demonstrated.
 
 ## Tier 3 — Domain extensions & framework depth (validated, second-wave)
 

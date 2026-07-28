@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.json",
+  "name": "io.github.funkyfunc/terminal-driver-mcp",
+  "description": "A real interactive terminal for AI agents (MCP). Run and test vim, htop, gdb, REPLs, and any TUI — things the built-in fire-and-forget terminal can't touch.",
+  "repository": {
+    "url": "https://github.com/funkyfunc/terminal-driver-mcp",
+    "source": "github"
+  },
+  "version": "0.8.0",
+  "packages": [
+    {
+      "registry_type": "npm",
+      "registry_base_url": "https://registry.npmjs.org",
+      "identifier": "terminal-driver-mcp",
+      "version": "0.8.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

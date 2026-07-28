@@ -100,6 +100,7 @@ The agent drives your TUI interactively once, then writes a JSON test script tha
 node dist/index.js run tests/*.json               # exit 0 = all pass, 1 = failures
 node dist/index.js run --junit out.xml tests/*.json  # + JUnit report for CI (also --json)
 node dist/index.js run --trace tests/*.json          # + a self-contained HTML trace per test
+node dist/index.js run --retries 2 tests/*.json      # re-run failures; pass-on-retry = flaky, not failed
 ```
 
 or ad-hoc via the `run_test` tool. Example script:
@@ -123,6 +124,8 @@ or ad-hoc via the `run_test` tool. Example script:
 
 Step types: `{"wait": "<regex>"}`, `{"idle_ms": N, "mode"?: "silence"|"stable_screen"}`, `{"write": "text", "keys": [...], "raw_hex"?}`, `{"assert": "text", "row"?, "col"?}`, `{"match_screen": "name", "mask"?: ["<regex>"]}`, `{"resize": [cols, rows]}`, `{"sleep_ms": N}`, `{"command_exit": N}` (with `"shell_integration": true`), `{"expect_exit": code}`. Execution stops at the first failing step and the report includes the final screen.
 
+**Soft assertions & grouping.** Any assertion step (`assert`, `match_screen`, `command_exit`, `expect_exit`) can set `"soft": true` — a soft failure is recorded and still fails the test, but execution continues instead of stopping, so a single run surfaces every problem. Any step can carry a `"group": "label"`; consecutive steps sharing a label render as a named section in the CLI output, the trace viewer, and the reporters.
+
 **Golden snapshots.** A `match_screen` step compares the whole rendered screen against a stored golden file (in a `__screens__/` dir beside the test); regenerate with `run --update`, and mask volatile regions (clocks, PIDs) with `mask` regexes. Because the screen is a canonical text grid, mismatches show as a readable row diff.
 
 **HTML trace viewer.** `run --trace` (or the `run_test` `trace_file` param) writes a self-contained `trace.html` per test: a step list, the rendered screen captured after each step (colors and all), and a jump to the failing step — the terminal equivalent of Playwright's trace viewer, ideal as a CI failure artifact.
@@ -141,26 +144,38 @@ or the `recording_to_test` tool mid-session. Recorded keystrokes become `write`/
 
 ## Setup
 
-```sh
-git clone https://github.com/funkyfunc/terminal-driver-mcp.git
-cd terminal-driver-mcp
-npm install
-npm run build
-```
-
-Register with Claude Code (from the repo directory):
-
-```sh
-claude mcp add terminal --scope user -- node "$(pwd)/dist/index.js"
-```
-
-Or, once published to npm:
+Published to npm as [`terminal-driver-mcp`](https://www.npmjs.com/package/terminal-driver-mcp); no clone or build needed. Register with Claude Code in one line:
 
 ```sh
 claude mcp add terminal --scope user -- npx -y terminal-driver-mcp
 ```
 
 Then `/mcp` inside Claude Code to confirm the connection.
+
+For any other MCP client, point it at the same command:
+
+```json
+{
+  "mcpServers": {
+    "terminal": {
+      "command": "npx",
+      "args": ["-y", "terminal-driver-mcp"]
+    }
+  }
+}
+```
+
+The server is also listed in the [MCP registry](https://registry.modelcontextprotocol.io) as `io.github.funkyfunc/terminal-driver-mcp`.
+
+### From source (for development)
+
+```sh
+git clone https://github.com/funkyfunc/terminal-driver-mcp.git
+cd terminal-driver-mcp
+npm install
+npm run build
+claude mcp add terminal --scope user -- node "$(pwd)/dist/index.js"
+```
 
 ## Recommended agent workflow (Assert–Act–Assert)
 
