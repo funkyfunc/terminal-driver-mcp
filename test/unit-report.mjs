@@ -57,5 +57,26 @@ check(
   JSON.stringify(json[0].steps),
 );
 
+// Flaky metadata (from --retries) surfaces at the file level.
+const flakyJson = JSON.parse(
+  jsonReport([
+    {
+      file: "b.json",
+      attempts: 2,
+      flaky: true,
+      result: {
+        name: "suite B",
+        ok: true,
+        steps: [{ index: 0, desc: "wait /z/", ok: true, detail: "", elapsedMs: 1 }],
+      },
+    },
+  ]),
+);
+check(
+  "json reports flaky attempts",
+  flakyJson[0].flaky === true && flakyJson[0].attempts === 2,
+  JSON.stringify(flakyJson[0]),
+);
+
 console.log(failures === 0 ? "\nREPORT UNIT TESTS PASSED" : `\n${failures} REPORT UNIT FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

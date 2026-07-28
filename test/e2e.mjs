@@ -656,4 +656,60 @@ try {
   );
 }
 
+// --- retries / flake quarantine: fail once, pass on retry → reported flaky ---
+// Deterministic flakiness: a marker file that only exists on the 2nd attempt.
+const flakeMarker = join(REC_DIR, "flake-marker");
+if (existsSync(flakeMarker)) unlinkSync(flakeMarker);
+const flakeFile = join(REC_DIR, "flake-test.json");
+writeFileSync(
+  flakeFile,
+  JSON.stringify({
+    name: "flaky cli",
+    command: `if [ -f '${flakeMarker}' ]; then echo READY; else : > '${flakeMarker}'; echo NOTYET; fi; sleep 60`,
+    cols: 40,
+    rows: 6,
+    steps: [{ wait: "READY", timeout_ms: 1500 }],
+  }),
+);
+try {
+  const out = execFileSync("node", [SERVER, "run", "--retries", "1", flakeFile], {
+    encoding: "utf8",
+    env: { ...process.env, TERMINAL_DRIVER_MCP_RECORDING_DIR: REC_DIR },
+  });
+  check(
+    "retries: a test that passes on retry is flaky, not failed (exit 0)",
+    out.includes("PASS: flaky cli") && out.includes("FLAKY") && out.includes("(1 flaky)"),
+    out,
+  );
+} catch (err) {
+  check(
+    "retries: a test that passes on retry is flaky, not failed (exit 0)",
+    false,
+    String(err.stdout || err),
+  );
+}
+// A test that never passes still fails after exhausting the retry budget.
+writeFileSync(
+  flakeFile,
+  JSON.stringify({
+    name: "always fails",
+    command: "echo hello; sleep 60",
+    steps: [{ wait: "never-there", timeout_ms: 400 }],
+  }),
+);
+try {
+  execFileSync("node", [SERVER, "run", "--retries", "2", flakeFile], {
+    encoding: "utf8",
+    env: { ...process.env, TERMINAL_DRIVER_MCP_RECORDING_DIR: REC_DIR },
+  });
+  check("retries: exhausting retries still fails (exit 1)", false, "expected nonzero exit");
+} catch (err) {
+  const out = String(err.stdout || "");
+  check(
+    "retries: exhausting retries still fails (exit 1)",
+    err.status === 1 && /retry 2\/2/.test(out) && out.includes("FAIL: always fails"),
+    out,
+  );
+}
+
 process.exit(summary("E2E"));

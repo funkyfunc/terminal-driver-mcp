@@ -337,41 +337,59 @@ function takeOption(args: string[], flag: string): string | undefined {
 /**
  * CLI entry: run each test file, print results, return a process exit code.
  * Flags: `--update` regenerates golden snapshots (in a `__screens__/` dir
- * beside each file), `--trace` writes a `<file>.trace.html`, and
- * `--junit <path>` / `--json <path>` write aggregated CI reports.
+ * beside each file), `--trace` writes a `<file>.trace.html`, `--retries N`
+ * re-runs a failing test up to N times (a test that then passes is reported
+ * flaky, not failed — the Playwright convention), and `--junit <path>` /
+ * `--json <path>` write aggregated CI reports.
  */
 export async function runTestFiles(args: string[], print: (line: string) => void): Promise<number> {
   const rest = [...args];
   const junitOut = takeOption(rest, "--junit");
   const jsonOut = takeOption(rest, "--json");
+  const retries = Math.max(0, Math.min(10, Number.parseInt(takeOption(rest, "--retries") ?? "0", 10) || 0));
   const update = rest.includes("--update");
   const trace = rest.includes("--trace");
   const files = rest.filter((a) => !a.startsWith("--"));
   if (files.length === 0) {
     print(
-      "Usage: terminal-driver-mcp run [--update] [--trace] [--junit <path>] [--json <path>] <test.json...>",
+      "Usage: terminal-driver-mcp run [--update] [--trace] [--retries N] [--junit <path>] [--json <path>] <test.json...>",
     );
     return 2;
   }
   let failures = 0;
+  let flakes = 0;
   const collected: FileResult[] = [];
   for (const file of files) {
-    let result: TestResult;
+    const options: RunOptions = {
+      screensDir: join(dirname(file), "__screens__"),
+      update,
+      trace: trace ? `${file.replace(/\.json$/i, "")}.trace.html` : undefined,
+    };
+    let spec: TestSpec;
     try {
-      const options: RunOptions = {
-        screensDir: join(dirname(file), "__screens__"),
-        update,
-        trace: trace ? `${file.replace(/\.json$/i, "")}.trace.html` : undefined,
-      };
-      result = await runTest(parseTest(readFileSync(file, "utf8"), file), options);
-      if (trace && options.trace) print(`  trace: ${options.trace}`);
+      spec = parseTest(readFileSync(file, "utf8"), file);
     } catch (err) {
       print(`FAIL: ${file} — ${err instanceof Error ? err.message : err}`);
       failures++;
       continue;
     }
-    collected.push({ file, result });
+    // Attempt up to retries+1 times; stop as soon as a run passes. Updating
+    // golden snapshots is a single deterministic pass, so never retry then.
+    const maxAttempts = update ? 1 : retries + 1;
+    let result: TestResult;
+    let attempts = 0;
+    do {
+      attempts++;
+      if (attempts > 1) print(`  retry ${attempts - 1}/${retries} of ${spec.name}…`);
+      result = await runTest(spec, options);
+    } while (!result.ok && attempts < maxAttempts);
+    if (trace && options.trace) print(`  trace: ${options.trace}`);
+
+    const flaky = result.ok && attempts > 1;
+    if (flaky) flakes++;
+    collected.push({ file, result, attempts, flaky });
     print(formatResult(result));
+    if (flaky) print(`  FLAKY: ${spec.name} passed on attempt ${attempts} of ${maxAttempts}.`);
     if (!result.ok) failures++;
   }
   if (junitOut) {
@@ -382,10 +400,13 @@ export async function runTestFiles(args: string[], print: (line: string) => void
     writeFileSync(jsonOut, jsonReport(collected));
     print(`  JSON report: ${jsonOut}`);
   }
+  // Flaky tests passed (within the retry budget) and do not fail the build,
+  // but are always called out so intermittent failures never hide silently.
+  const flakeNote = flakes > 0 ? ` (${flakes} flaky)` : "";
   print(
     failures === 0
-      ? `\nAll ${files.length} test(s) passed.`
-      : `\n${failures} of ${files.length} test(s) failed.`,
+      ? `\nAll ${files.length} test(s) passed${flakeNote}.`
+      : `\n${failures} of ${files.length} test(s) failed${flakeNote}.`,
   );
   return failures === 0 ? 0 : 1;
 }

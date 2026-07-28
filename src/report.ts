@@ -8,6 +8,8 @@ import type { TestResult } from "./runner.js";
 export interface FileResult {
   file: string;
   result: TestResult;
+  attempts?: number; // total attempts run (>1 means it was retried)
+  flaky?: boolean; // failed at least once but eventually passed within the retry budget
 }
 
 const xmlEscape = (s: string): string =>
@@ -41,10 +43,12 @@ export function junitReport(results: FileResult[]): string {
 
 /** Machine-readable JSON: the results verbatim, minus the heavy per-step cell captures. */
 export function jsonReport(results: FileResult[]): string {
-  const trimmed = results.map(({ file, result }) => ({
+  const trimmed = results.map(({ file, result, attempts, flaky }) => ({
     file,
     name: result.name,
     ok: result.ok,
+    ...(attempts && attempts > 1 ? { attempts } : {}),
+    ...(flaky ? { flaky } : {}),
     steps: result.steps.map(({ index, desc, ok, detail, elapsedMs, group, soft }) => ({
       index,
       desc,
