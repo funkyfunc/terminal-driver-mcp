@@ -55,6 +55,16 @@ check("session_assert row 0", !r.isError, r.text);
 r = await call("session_assert", { session_id: "v", expected_text: "goodbye", exact_row: 0 });
 check("session_assert negative case reports failure", r.isError, r.text);
 
+// absent: assert text is NOT on screen
+r = await call("session_assert", { session_id: "v", expected_text: "goodbye", absent: true });
+check("session_assert absent passes when text is gone", !r.isError && r.text.includes("is absent"), r.text);
+r = await call("session_assert", { session_id: "v", expected_text: "hello world", absent: true });
+check(
+  "session_assert absent fails when text is present",
+  r.isError && r.text.includes("should be absent"),
+  r.text,
+);
+
 r = await call("session_write", { session_id: "v", input: ":wq", special_keys: ["enter"] });
 check("session_write :wq", !r.isError, r.text);
 
@@ -637,6 +647,7 @@ writeFileSync(
       { wait: "AAA", group: "arrange" },
       { assert: "ZZZ-missing", soft: true, group: "assert" },
       { assert: "BBB", group: "assert" },
+      { assert: "ZZZ-missing", absent: true, group: "assert" },
     ],
   }),
 );
@@ -651,6 +662,7 @@ try {
       out.includes("FAIL: soft cli") &&
       /\(soft\)/.test(out) && // the soft assertion is marked
       /step 3:.*BBB/.test(out) && // the step *after* the soft failure still ran
+      /step 4:.*assert not "ZZZ-missing"/.test(out) && // absent step rendered + ran
       out.includes("▸ assert"), // group header rendered
     out,
   );

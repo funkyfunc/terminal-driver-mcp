@@ -415,10 +415,12 @@ export function registerTools(server: McpServer): void {
       description:
         "Deterministic test primitive: check that expected_text appears on the visible screen. " +
         "With exact_row (0-based), the text must appear on that specific row; adding exact_col requires it " +
-        "to start at that exact column. Failures include the actual content with surrounding context.",
+        "to start at that exact column. Set absent:true to invert the check — assert the text is NOT on " +
+        "screen (anywhere, or not on exact_row), for proving a row/dialog/item is gone. " +
+        "Failures include the actual content with surrounding context.",
       inputSchema: {
         session_id: sessionId,
-        expected_text: z.string().describe("Substring expected on screen"),
+        expected_text: z.string().describe("Substring to check for on screen"),
         exact_row: z
           .number()
           .int()
@@ -430,12 +432,18 @@ export function registerTools(server: McpServer): void {
           .int()
           .min(0)
           .optional()
-          .describe("Require expected_text to start at this 0-based column (needs exact_row)"),
+          .describe(
+            "Require expected_text to start at this 0-based column (needs exact_row; not for absent)",
+          ),
+        absent: z
+          .boolean()
+          .default(false)
+          .describe("Invert: pass when expected_text is NOT present (anywhere, or not on exact_row)"),
       },
     },
-    safe(async ({ session_id, expected_text, exact_row, exact_col }) => {
+    safe(async ({ session_id, expected_text, exact_row, exact_col, absent }) => {
       const session = getSession(session_id);
-      const result = await assertScreen(session, expected_text, exact_row, exact_col);
+      const result = await assertScreen(session, expected_text, exact_row, exact_col, absent);
       return result.ok ? ok(result.message) : fail(result.message);
     }),
   );
@@ -502,7 +510,7 @@ export function registerTools(server: McpServer): void {
         "no agent in the loop, also runnable in CI via `terminal-driver-mcp run <file>`. Spec: " +
         '{"name", "command", "cwd"?, "cols"?, "rows"?, "steps": [...]} where each step is one of ' +
         '{"wait": "<regex>", "timeout_ms"?} | {"idle_ms": N, "mode"?: "silence"|"stable_screen"} | ' +
-        '{"write": "text", "keys": ["enter", ...]} | {"assert": "text", "row"?: N, "col"?: N} | ' +
+        '{"write": "text", "keys": ["enter", ...]} | {"assert": "text", "row"?: N, "col"?: N, "absent"?: true} | ' +
         '{"resize": [cols, rows]} | {"sleep_ms": N} | {"command_exit": code} | ' +
         '{"match_screen": "name", "mask"?: ["<regex>"]} | {"expect_exit": code}. ' +
         'Any step may carry a "group" label (named section in reports/trace); assertion steps ' +

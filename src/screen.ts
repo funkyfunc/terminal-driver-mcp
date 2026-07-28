@@ -247,18 +247,53 @@ export interface AssertResult {
 /**
  * Check that expected appears on the visible screen: anywhere, on a specific
  * row, or starting at an exact row+column. Failure messages include context.
+ * With absent=true the sense is inverted — the check passes iff expected is
+ * NOT present (anywhere, or not on the given row); exact_col is not meaningful
+ * for an absence check and is rejected.
  */
 export async function assertScreen(
   session: TerminalSession,
   expected: string,
   row?: number,
   col?: number,
+  absent = false,
 ): Promise<AssertResult> {
   await flush(session);
   const lines = (await snapshotText(session)).split("\n");
 
   if (col !== undefined && row === undefined) {
     return { ok: false, message: "FAIL: exact_col requires exact_row." };
+  }
+
+  if (absent) {
+    if (col !== undefined) {
+      return { ok: false, message: "FAIL: absent cannot be combined with exact_col." };
+    }
+    if (row !== undefined) {
+      if (row >= lines.length) {
+        return {
+          ok: false,
+          message: `FAIL: row ${row} is outside the visible screen (0-${lines.length - 1}).`,
+        };
+      }
+      const actual = lines[row];
+      if (!actual.includes(expected)) {
+        return { ok: true, message: `PASS: row ${row} does not contain "${expected}".\n  ${row}: ${actual}` };
+      }
+      return {
+        ok: false,
+        message: `FAIL: row ${row} unexpectedly contains "${expected}".\n  ${row}: ${actual}`,
+      };
+    }
+    const found = lines.map((line, y) => ({ line, y })).filter(({ line }) => line.includes(expected));
+    if (found.length === 0) {
+      return { ok: true, message: `PASS: "${expected}" is absent from the visible screen.` };
+    }
+    const listing = found.map((h) => `  ${h.y}: ${h.line}`).join("\n");
+    return {
+      ok: false,
+      message: `FAIL: "${expected}" should be absent but appears on row(s) ${found.map((h) => h.y).join(", ")}.\n${listing}`,
+    };
   }
 
   if (row !== undefined) {

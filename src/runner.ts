@@ -57,6 +57,7 @@ const StepSchema = z.union([
       assert: z.string(),
       row: z.number().int().min(0).optional(),
       col: z.number().int().min(0).optional(),
+      absent: z.boolean().default(false), // invert: assert the text is NOT on screen
       soft,
       group,
     })
@@ -115,9 +116,9 @@ function describeStep(step: Step): string {
   if ("wait" in step) return `wait /${step.wait}/`;
   if ("idle_ms" in step) return `wait ${step.mode} ${step.idle_ms}ms`;
   if ("assert" in step)
-    return `assert "${step.assert}"${step.row !== undefined ? ` @ row ${step.row}` : ""}${
-      step.col !== undefined ? `, col ${step.col}` : ""
-    }`;
+    return `assert ${step.absent ? "not " : ""}"${step.assert}"${
+      step.row !== undefined ? ` @ row ${step.row}` : ""
+    }${step.col !== undefined ? `, col ${step.col}` : ""}`;
   if ("resize" in step) return `resize ${step.resize[0]}x${step.resize[1]}`;
   if ("sleep_ms" in step) return `sleep ${step.sleep_ms}ms`;
   if ("command_exit" in step) return `command exit ${step.command_exit}`;
@@ -153,7 +154,7 @@ async function runStep(
     return { ok: result.ok, detail: result.message };
   }
   if ("assert" in step) {
-    const result = await assertScreen(session, step.assert, step.row, step.col);
+    const result = await assertScreen(session, step.assert, step.row, step.col, step.absent);
     return { ok: result.ok, detail: result.message };
   }
   if ("resize" in step) {

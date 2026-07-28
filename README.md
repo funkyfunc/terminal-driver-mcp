@@ -47,7 +47,7 @@ Keep using the built-in terminal for `npm test` and `git status`. Reach for this
 | `session_wait_command(session_id, timeout_ms)` | Block until the running shell command finishes, then return its result (needs `shell_integration`) |
 | `session_wait(session_id, pattern, timeout_ms)` | Poll until a regex matches the screen |
 | `session_wait_idle(session_id, idle_ms=80, timeout_ms, mode=silence\|stable_screen)` | Wait until output quiesces (byte silence) or the rendered screen stops changing |
-| `session_assert(session_id, expected_text, exact_row?, exact_col?)` | Pass/fail screen assertion with contextual diff; `exact_col` pins the text to a starting column |
+| `session_assert(session_id, expected_text, exact_row?, exact_col?, absent?)` | Pass/fail screen assertion with contextual diff; `exact_col` pins the text to a starting column; `absent:true` asserts the text is *not* on screen |
 | `session_region(session_id, row, col, width, height)` | Extract a rectangle of the screen (a pane, status bar, or widget) |
 | `session_resize(session_id, cols, rows)` | Resize PTY + emulator (SIGWINCH reflow) |
 | `session_list()` | List sessions with pid/status/age |
@@ -122,7 +122,7 @@ or ad-hoc via the `run_test` tool. Example script:
 }
 ```
 
-Step types: `{"wait": "<regex>"}`, `{"idle_ms": N, "mode"?: "silence"|"stable_screen"}`, `{"write": "text", "keys": [...], "raw_hex"?}`, `{"assert": "text", "row"?, "col"?}`, `{"match_screen": "name", "mask"?: ["<regex>"]}`, `{"resize": [cols, rows]}`, `{"sleep_ms": N}`, `{"command_exit": N}` (with `"shell_integration": true`), `{"expect_exit": code}`. Execution stops at the first failing step and the report includes the final screen.
+Step types: `{"wait": "<regex>"}`, `{"idle_ms": N, "mode"?: "silence"|"stable_screen"}`, `{"write": "text", "keys": [...], "raw_hex"?}`, `{"assert": "text", "row"?, "col"?, "absent"?}` (`absent:true` asserts the text is *not* on screen), `{"match_screen": "name", "mask"?: ["<regex>"]}`, `{"resize": [cols, rows]}`, `{"sleep_ms": N}`, `{"command_exit": N}` (with `"shell_integration": true`), `{"expect_exit": code}`. Execution stops at the first failing step and the report includes the final screen.
 
 **Soft assertions & grouping.** Any assertion step (`assert`, `match_screen`, `command_exit`, `expect_exit`) can set `"soft": true` — a soft failure is recorded and still fails the test, but execution continues instead of stopping, so a single run surfaces every problem. Any step can carry a `"group": "label"`; consecutive steps sharing a label render as a named section in the CLI output, the trace viewer, and the reporters.
 
