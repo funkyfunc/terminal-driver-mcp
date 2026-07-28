@@ -18,7 +18,7 @@ behind them. Nothing below Tier 1 is committed.
 - **Soft assertions + step grouping** — assertion steps take `soft: true` (record and continue, still fails the test); any step takes a `group` label rendered as a named section in the CLI output, trace viewer, and reporters.
 - **Retries / flake quarantine** — `run --retries N` re-runs a failing test; a test that then passes is reported flaky (not failed), the Playwright convention; flaky attempts recorded in the JSON report.
 - **Distribution DX** — `mcpName` in package.json + `server.json` for the [MCP registry](https://registry.modelcontextprotocol.io); README leads with the published `npx` install plus a generic-client config block.
-- **Negative assertions** — `session_assert` / the `assert` step take `absent: true` to assert text is *not* on screen (anywhere or on a given row) — for proving a row/dialog/item is gone without inverting a count. _Field request during 0.8.0 verification._
+- **Negative & count assertions** — `session_assert` / the `assert` step take `absent: true` (text is *not* on screen) and `count: N` (exactly N occurrences); `session_wait` / the `wait` step take `absent: true` to block until a pattern *disappears* (the temporal counterpart — wait for a spinner/dialog/row to clear before asserting it's gone, avoiding a redraw race). _Field requests during 0.8.0 verification._
 
 ---
 

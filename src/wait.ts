@@ -16,29 +16,40 @@ export interface WaitResult {
   message: string;
 }
 
+/**
+ * Poll until `pattern` matches the screen — or, with absent=true, until it
+ * stops matching (the temporal counterpart of an absence assertion: "delete
+ * the row, then wait for it to disappear before asserting"). Either way the
+ * final screen is returned, including on timeout.
+ */
 export async function waitForPattern(
   session: TerminalSession,
   pattern: RegExp,
   timeoutMs: number,
+  absent = false,
 ): Promise<WaitResult> {
   const start = Date.now();
   let sessionEnded = false;
+  const goal = absent ? `${pattern} to disappear` : pattern;
 
   for (;;) {
     const screen = await snapshotText(session);
     const elapsedMs = Date.now() - start;
 
-    if (pattern.test(screen)) {
-      return { ok: true, elapsedMs, screen, message: `Pattern ${pattern} matched after ${elapsedMs}ms.` };
+    // Satisfied when the pattern is present (normal) or gone (absent).
+    if (pattern.test(screen) !== absent) {
+      const how = absent ? `no longer present after ${elapsedMs}ms` : `matched after ${elapsedMs}ms`;
+      return { ok: true, elapsedMs, screen, message: `Pattern ${pattern} ${how}.` };
     }
     // One final snapshot is taken after exit before giving up, since the
     // last output may have arrived alongside process termination.
     if (sessionEnded) {
+      const why = absent ? `still matching ${pattern}` : `without matching ${pattern}`;
       return {
         ok: false,
         elapsedMs,
         screen,
-        message: `Session exited (code ${session.exitCode}) without matching ${pattern}.`,
+        message: `Session exited (code ${session.exitCode}) ${why}.`,
       };
     }
     if (elapsedMs >= timeoutMs) {
@@ -46,7 +57,7 @@ export async function waitForPattern(
         ok: false,
         elapsedMs,
         screen,
-        message: `Timed out after ${timeoutMs}ms waiting for ${pattern}.`,
+        message: `Timed out after ${timeoutMs}ms waiting for ${goal}.`,
       };
     }
     sessionEnded = session.exited;

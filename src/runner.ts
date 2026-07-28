@@ -32,7 +32,14 @@ const group = z.string().optional().describe("Section label to group this step u
 const soft = z.boolean().default(false).describe("Record the failure and keep going (still fails the test)");
 
 const StepSchema = z.union([
-  z.object({ wait: z.string(), timeout_ms: timeoutMs.default(10000), group }).strict(),
+  z
+    .object({
+      wait: z.string(),
+      timeout_ms: timeoutMs.default(10000),
+      absent: z.boolean().default(false),
+      group,
+    })
+    .strict(),
   z
     .object({
       idle_ms: z.number().int().min(20).max(10000),
@@ -58,6 +65,7 @@ const StepSchema = z.union([
       row: z.number().int().min(0).optional(),
       col: z.number().int().min(0).optional(),
       absent: z.boolean().default(false), // invert: assert the text is NOT on screen
+      count: z.number().int().min(0).optional(), // assert exactly N occurrences across the screen
       soft,
       group,
     })
@@ -113,12 +121,15 @@ export interface TestResult {
 }
 
 function describeStep(step: Step): string {
-  if ("wait" in step) return `wait /${step.wait}/`;
+  if ("wait" in step)
+    return `wait ${step.absent ? "for /" : "/"}${step.wait}/${step.absent ? " to clear" : ""}`;
   if ("idle_ms" in step) return `wait ${step.mode} ${step.idle_ms}ms`;
-  if ("assert" in step)
+  if ("assert" in step) {
+    if (step.count !== undefined) return `assert "${step.assert}" ×${step.count}`;
     return `assert ${step.absent ? "not " : ""}"${step.assert}"${
       step.row !== undefined ? ` @ row ${step.row}` : ""
     }${step.col !== undefined ? `, col ${step.col}` : ""}`;
+  }
   if ("resize" in step) return `resize ${step.resize[0]}x${step.resize[1]}`;
   if ("sleep_ms" in step) return `sleep ${step.sleep_ms}ms`;
   if ("command_exit" in step) return `command exit ${step.command_exit}`;
@@ -143,7 +154,7 @@ async function runStep(
   ctx: { testName: string; options: RunOptions },
 ): Promise<{ ok: boolean; detail: string }> {
   if ("wait" in step) {
-    const result = await waitForPattern(session, new RegExp(step.wait, "m"), step.timeout_ms);
+    const result = await waitForPattern(session, new RegExp(step.wait, "m"), step.timeout_ms, step.absent);
     return { ok: result.ok, detail: result.message };
   }
   if ("idle_ms" in step) {
@@ -154,7 +165,12 @@ async function runStep(
     return { ok: result.ok, detail: result.message };
   }
   if ("assert" in step) {
-    const result = await assertScreen(session, step.assert, step.row, step.col, step.absent);
+    const result = await assertScreen(session, step.assert, {
+      row: step.row,
+      col: step.col,
+      absent: step.absent,
+      count: step.count,
+    });
     return { ok: result.ok, detail: result.message };
   }
   if ("resize" in step) {

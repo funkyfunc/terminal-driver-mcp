@@ -53,10 +53,25 @@ function makeSession() {
 {
   const session = makeSession();
   session.term.write("你好end"); // 你,好 are width-2; "end" starts at column 4
-  const atCol4 = await assertScreen(session, "end", 0, 4);
+  const atCol4 = await assertScreen(session, "end", { row: 0, col: 4 });
   check("exact_col accounts for wide chars (end at col 4)", atCol4.ok, atCol4.message);
-  const atCol2 = await assertScreen(session, "end", 0, 2);
+  const atCol2 = await assertScreen(session, "end", { row: 0, col: 2 });
   check("exact_col rejects wrong column for wide chars", !atCol2.ok, atCol2.message);
+}
+
+// absent + count modifiers on assertScreen.
+{
+  const session = makeSession();
+  session.term.write("foo bar foo\r\nbaz");
+  check("absent passes for missing text", (await assertScreen(session, "qux", { absent: true })).ok);
+  check("absent fails for present text", !(await assertScreen(session, "baz", { absent: true })).ok);
+  check("count matches exact occurrences", (await assertScreen(session, "foo", { count: 2 })).ok);
+  check("count fails on wrong number", !(await assertScreen(session, "foo", { count: 3 })).ok);
+  check("count=0 is equivalent to absent", (await assertScreen(session, "nope", { count: 0 })).ok);
+  check(
+    "count rejects row/col/absent combos",
+    !(await assertScreen(session, "foo", { count: 1, absent: true })).ok,
+  );
 }
 
 // snapshotCells: styled runs coalesce, colors/attrs surface, trailing blanks trimmed.

@@ -244,22 +244,56 @@ export interface AssertResult {
   message: string;
 }
 
+/** Modifiers for {@link assertScreen}; all optional and mutually constrained. */
+export interface AssertOptions {
+  row?: number; // restrict to this 0-based visible row
+  col?: number; // require the text to start at this column (needs row)
+  absent?: boolean; // invert: pass when the text is NOT present
+  count?: number; // require exactly this many occurrences across the screen
+}
+
 /**
  * Check that expected appears on the visible screen: anywhere, on a specific
  * row, or starting at an exact row+column. Failure messages include context.
  * With absent=true the sense is inverted — the check passes iff expected is
  * NOT present (anywhere, or not on the given row); exact_col is not meaningful
- * for an absence check and is rejected.
+ * for an absence check and is rejected. With count=N it passes iff expected
+ * occurs exactly N times across the screen (count subsumes absent as count=0
+ * and is whole-screen only, so row/col/absent are rejected alongside it).
  */
 export async function assertScreen(
   session: TerminalSession,
   expected: string,
-  row?: number,
-  col?: number,
-  absent = false,
+  opts: AssertOptions = {},
 ): Promise<AssertResult> {
+  const { row, col, absent = false, count } = opts;
   await flush(session);
   const lines = (await snapshotText(session)).split("\n");
+
+  if (count !== undefined) {
+    if (row !== undefined || col !== undefined || absent) {
+      return { ok: false, message: "FAIL: count cannot be combined with exact_row/exact_col/absent." };
+    }
+    // Non-overlapping occurrences across the whole screen text.
+    const hay = lines.join("\n");
+    let occurrences = 0;
+    for (
+      let i = expected.length > 0 ? hay.indexOf(expected) : -1;
+      i !== -1;
+      i = hay.indexOf(expected, i + expected.length)
+    ) {
+      occurrences++;
+    }
+    const rowsWith = lines.map((line, y) => ({ line, y })).filter(({ line }) => line.includes(expected));
+    const listing = rowsWith.length > 0 ? `\n${rowsWith.map((h) => `  ${h.y}: ${h.line}`).join("\n")}` : "";
+    if (occurrences === count) {
+      return { ok: true, message: `PASS: "${expected}" appears ${occurrences} time(s).${listing}` };
+    }
+    return {
+      ok: false,
+      message: `FAIL: expected "${expected}" ${count} time(s), found ${occurrences}.${listing}`,
+    };
+  }
 
   if (col !== undefined && row === undefined) {
     return { ok: false, message: "FAIL: exact_col requires exact_row." };

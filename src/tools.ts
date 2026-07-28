@@ -351,14 +351,20 @@ export function registerTools(server: McpServer): void {
       description:
         "Poll the rendered screen until a regex matches (checked every 50ms against the plain-text grid, " +
         "multiline mode). Returns the screen on match; errors with the final screen on timeout. " +
-        "Use this to synchronize with slow-rendering UIs before acting.",
+        "Use this to synchronize with slow-rendering UIs before acting. Set absent:true to wait for the " +
+        "opposite — until the pattern STOPS matching (e.g. wait for a spinner, dialog, or just-deleted row to " +
+        "disappear before asserting it's gone), avoiding a race with the redraw.",
       inputSchema: {
         session_id: sessionId,
         pattern: z.string().describe("JavaScript regex source, e.g. 'Password:' or '\\\\$\\\\s*$'"),
         timeout_ms: z.number().int().min(50).max(120000).default(10000),
+        absent: z
+          .boolean()
+          .default(false)
+          .describe("Wait until the pattern is NO LONGER on screen instead of until it appears"),
       },
     },
-    safe(async ({ session_id, pattern, timeout_ms }) => {
+    safe(async ({ session_id, pattern, timeout_ms, absent }) => {
       const session = getSession(session_id);
       let regex: RegExp;
       try {
@@ -366,7 +372,7 @@ export function registerTools(server: McpServer): void {
       } catch (err) {
         return fail(`Invalid regex "${pattern}": ${err instanceof Error ? err.message : err}`);
       }
-      const result = await waitForPattern(session, regex, timeout_ms);
+      const result = await waitForPattern(session, regex, timeout_ms, absent);
       const text = `${result.message}\n${statusHeader(session)}\n${result.screen}`;
       return result.ok ? ok(text) : fail(text);
     }),
@@ -416,7 +422,9 @@ export function registerTools(server: McpServer): void {
         "Deterministic test primitive: check that expected_text appears on the visible screen. " +
         "With exact_row (0-based), the text must appear on that specific row; adding exact_col requires it " +
         "to start at that exact column. Set absent:true to invert the check — assert the text is NOT on " +
-        "screen (anywhere, or not on exact_row), for proving a row/dialog/item is gone. " +
+        "screen (anywhere, or not on exact_row), for proving a row/dialog/item is gone. Set count:N to assert " +
+        "the text appears exactly N times across the screen (for list sizes / duplicate checks); count is " +
+        "whole-screen and cannot combine with exact_row/exact_col/absent. " +
         "Failures include the actual content with surrounding context.",
       inputSchema: {
         session_id: sessionId,
@@ -439,11 +447,24 @@ export function registerTools(server: McpServer): void {
           .boolean()
           .default(false)
           .describe("Invert: pass when expected_text is NOT present (anywhere, or not on exact_row)"),
+        count: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(
+            "Assert expected_text occurs exactly this many times across the screen (whole-screen only)",
+          ),
       },
     },
-    safe(async ({ session_id, expected_text, exact_row, exact_col, absent }) => {
+    safe(async ({ session_id, expected_text, exact_row, exact_col, absent, count }) => {
       const session = getSession(session_id);
-      const result = await assertScreen(session, expected_text, exact_row, exact_col, absent);
+      const result = await assertScreen(session, expected_text, {
+        row: exact_row,
+        col: exact_col,
+        absent,
+        count,
+      });
       return result.ok ? ok(result.message) : fail(result.message);
     }),
   );
@@ -509,8 +530,8 @@ export function registerTools(server: McpServer): void {
         "Replay a JSON test script against a fresh PTY session and return pass/fail per step — deterministic, " +
         "no agent in the loop, also runnable in CI via `terminal-driver-mcp run <file>`. Spec: " +
         '{"name", "command", "cwd"?, "cols"?, "rows"?, "steps": [...]} where each step is one of ' +
-        '{"wait": "<regex>", "timeout_ms"?} | {"idle_ms": N, "mode"?: "silence"|"stable_screen"} | ' +
-        '{"write": "text", "keys": ["enter", ...]} | {"assert": "text", "row"?: N, "col"?: N, "absent"?: true} | ' +
+        '{"wait": "<regex>", "timeout_ms"?, "absent"?: true} | {"idle_ms": N, "mode"?: "silence"|"stable_screen"} | ' +
+        '{"write": "text", "keys": ["enter", ...]} | {"assert": "text", "row"?: N, "col"?: N, "absent"?: true, "count"?: N} | ' +
         '{"resize": [cols, rows]} | {"sleep_ms": N} | {"command_exit": code} | ' +
         '{"match_screen": "name", "mask"?: ["<regex>"]} | {"expect_exit": code}. ' +
         'Any step may carry a "group" label (named section in reports/trace); assertion steps ' +

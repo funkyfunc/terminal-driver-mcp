@@ -65,6 +65,22 @@ check(
   r.text,
 );
 
+// count: exact occurrence assertion
+r = await call("session_assert", { session_id: "v", expected_text: "hello world", count: 1 });
+check(
+  "session_assert count matches exact occurrences",
+  !r.isError && r.text.includes("appears 1 time"),
+  r.text,
+);
+r = await call("session_assert", { session_id: "v", expected_text: "hello world", count: 2 });
+check("session_assert count fails on wrong count", r.isError && r.text.includes("found 1"), r.text);
+r = await call("session_assert", { session_id: "v", expected_text: "hello world", count: 1, exact_row: 0 });
+check(
+  "session_assert count rejects row/col combo",
+  r.isError && r.text.includes("cannot be combined"),
+  r.text,
+);
+
 r = await call("session_write", { session_id: "v", input: ":wq", special_keys: ["enter"] });
 check("session_write :wq", !r.isError, r.text);
 
@@ -156,6 +172,24 @@ check(
 r = await call("session_read", { session_id: "scroll", scrollback_lines: 1000 });
 check("scrollback_lines recovers early output", !r.isError && /^1$/m.test(r.text), r.text);
 await call("session_kill", { session_id: "scroll" });
+
+// --- wait absent: block until a pattern disappears ---
+r = await call("session_create", {
+  session_id: "gone",
+  // Print SPIN, then after a beat clear the screen and print DONE.
+  command: "printf 'SPIN\\n'; sleep 0.4; printf '\\033[2J\\033[H'; printf 'DONE\\n'; sleep 60",
+  cols: 40,
+  rows: 6,
+});
+r = await call("session_wait", { session_id: "gone", pattern: "SPIN", timeout_ms: 5000 });
+check("wait sees the pattern first", !r.isError, r.text);
+r = await call("session_wait", { session_id: "gone", pattern: "SPIN", absent: true, timeout_ms: 5000 });
+check(
+  "wait absent resolves once the pattern clears",
+  !r.isError && r.text.includes("no longer present"),
+  r.text,
+);
+await call("session_kill", { session_id: "gone" });
 
 // --- new: stable_screen wait mode ---
 r = await call("session_create", { session_id: "st", command: "echo settled; sleep 60" });
@@ -648,6 +682,7 @@ writeFileSync(
       { assert: "ZZZ-missing", soft: true, group: "assert" },
       { assert: "BBB", group: "assert" },
       { assert: "ZZZ-missing", absent: true, group: "assert" },
+      { assert: "AAA", count: 1, group: "assert" },
     ],
   }),
 );
@@ -663,6 +698,7 @@ try {
       /\(soft\)/.test(out) && // the soft assertion is marked
       /step 3:.*BBB/.test(out) && // the step *after* the soft failure still ran
       /step 4:.*assert not "ZZZ-missing"/.test(out) && // absent step rendered + ran
+      /step 5:.*assert "AAA" ×1/.test(out) && // count step rendered + ran
       out.includes("▸ assert"), // group header rendered
     out,
   );
