@@ -3,23 +3,21 @@
 Publishing runs in CI via npm **trusted publishing (OIDC)** — no npm token, no
 2FA/security-key in the loop. The `.github/workflows/release.yml` workflow
 triggers on a version tag, runs the full test suite on Linux + macOS, then
-pauses on the `release` environment for a **manual approval** before publishing
-with build provenance.
+publishes with build provenance. **Pushing the tag is the approval** — there is
+no manual gate (the `release` environment exists only to scope the npm trusted
+publisher; it has no protection rules, matching browser-dvr-mcp).
 
 ## Per-release flow
 
-1. Bump the version in `package.json` and `src/index.ts` (the `McpServer`
-   version), commit, and land on `main` (green CI).
+1. Bump the version in `package.json`, `server.json` (two spots), and
+   `src/index.ts` (the `McpServer` version), commit, and land on `main`
+   (green CI).
 2. Tag and push:
    ```sh
    git tag -a vX.Y.Z -m "terminal-driver-mcp vX.Y.Z: <summary>"
    git push origin vX.Y.Z
    ```
-3. The Release workflow starts. Tests run, then the `publish` job waits for
-   approval. Open the run in **GitHub → Actions**, click **Review deployments**,
-   approve the `release` environment. (Approvable from the GitHub mobile app too
-   — no hardware key needed.)
-4. CI publishes to npm via OIDC. Done.
+3. CI tests and publishes to npm via OIDC. Done.
 
 The workflow fails fast if the tag doesn't match `package.json` version, so a
 mismatched tag can't publish.
@@ -40,11 +38,13 @@ Publisher** → add a **GitHub Actions** publisher:
 
 (There is no API for this; it must be set in the npmjs.com UI while signed in.)
 
-### 2. GitHub `release` environment with a required reviewer
+### 2. GitHub `release` environment (no protection rules)
 
-Repo → **Settings** → **Environments** → **New environment** → `release` → add
-yourself under **Required reviewers**. This is what turns the publish into a
-one-click approval. (Can also be created via `gh api`; see the setup commit.)
+Repo → **Settings** → **Environments** → **New environment** → `release`, with
+**no required reviewers**. The environment's only job is matching the trusted
+publisher config above. (A required-reviewer rule existed until 1.0.0 and was
+removed for parity with browser-dvr-mcp; to re-add a gate later, put a reviewer
+back on the environment — the workflow needs no change.)
 
 ## Notes
 

@@ -1,9 +1,9 @@
 name: Release
 
 # Publish to npm when a version tag is pushed. Auth is tokenless via npm
-# trusted publishing (OIDC) — no npm token or 2FA in CI. The `release`
-# environment gates the publish behind a manual approval (one click in the
-# GitHub UI), so a human still says "go" but no hardware key is involved.
+# trusted publishing (OIDC) — no npm token or 2FA in CI. Pushing the tag IS
+# the approval: the `release` environment has no protection rules and exists
+# only to scope the npm trusted-publisher identity.
 # See RELEASING.md for the one-time setup.
 
 on:
@@ -30,7 +30,7 @@ jobs:
   publish:
     needs: test
     runs-on: ubuntu-latest
-    environment: release # required-reviewer gate: pauses here for manual approval
+    environment: release # scopes the npm trusted-publisher identity (no gate)
     permissions:
       id-token: write # mint the short-lived OIDC token for trusted publishing
       contents: read
