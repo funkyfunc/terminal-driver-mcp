@@ -27,13 +27,13 @@ behind them. Nothing below Tier 1 is committed.
   - **Mouse wheel** — `session_click button: wheel_up | wheel_down` (SGR 64/65, `count` = ticks).
   - **Error coaching pack** — unknown key names get "did you mean…?" (aliases + edit distance); pattern-wait timeouts and assert failures hint when the target is in scrollback, wrapped across rows, or differs only by case/spacing; idle-wait timeouts point at pattern waits.
 - **Settled-frame pattern waits (1.1.1)** — after a pattern match, waits let output go briefly quiet (capped 500ms, ~zero cost on already-stable screens) and return the repainted screen instead of a torn mid-render frame; transient matches are flagged. Applies to `session_wait`, `session_write expect`, and `wait` steps. _Field report: a torn frame after `expect` masqueraded as two app bugs._
+- **Structured tool output (1.2.0)** — `session_wait_command`, `session_info`, and `session_list` declare `outputSchema` and return typed `structuredContent` (text block kept for compatibility). `session_read` deliberately excluded: mirroring a full screen into `structuredContent` would double the token cost of every read; revisit if clients learn to dedupe.
 
 ---
 
 ## Tier 2 — Reliability & CI adoption
 
 - **Auto-waiting baked into actions** — promote `wait-for-idle`/pattern to implicit preconditions before each keystroke/click, and make screen assertions auto-retry to a timeout. Kills the dominant flake source. Deferred deliberately: it changes action *timing semantics*, so it needs an explicit opt-in and careful defaults rather than an unsupervised change. _Playwright actionability / Cypress retry-ability; TUA-Bench shows pass@5 reliability is the field's weak spot._
-- **Structured tool output** (`outputSchema` + `structuredContent`) on `session_last_command`, `session_read`, `session_info`, `session_list` — typed results instead of JSON-in-text so agents can chain calls reliably. Keep the text block for compatibility. Deferred: an `outputSchema` is a hard runtime contract the SDK validates on every call, so it wants accurate per-tool schemas and its own focused pass.
 - **Publish `server.json` to the MCP registry** — the manifest exists; the actual `mcp-publisher` submission needs the maintainer's GitHub OIDC auth (a user-only step, like npm trusted publishing).
 
 ### Considered and dropped

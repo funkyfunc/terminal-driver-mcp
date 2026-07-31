@@ -6,13 +6,13 @@
     "url": "https://github.com/funkyfunc/terminal-driver-mcp",
     "source": "github"
   },
-  "version": "1.1.1",
+  "version": "1.2.0",
   "packages": [
     {
       "registry_type": "npm",
       "registry_base_url": "https://registry.npmjs.org",
       "identifier": "terminal-driver-mcp",
-      "version": "1.1.1",
+      "version": "1.2.0",
       "transport": {
         "type": "stdio"
       }

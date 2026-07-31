@@ -43,9 +43,18 @@ export const log = (...args: unknown[]) => console.error("[terminal-driver-mcp]"
 
 type TextContent = { type: "text"; text: string };
 type ImageContent = { type: "image"; data: string; mimeType: string };
-type ToolResult = { content: (TextContent | ImageContent)[]; isError?: boolean };
+type ToolResult = {
+  content: (TextContent | ImageContent)[];
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+};
 
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
+/** Success with typed structuredContent; the text block mirrors it for older clients. */
+const okStructured = (data: Record<string, unknown>, text?: string): ToolResult => ({
+  content: [{ type: "text", text: text ?? JSON.stringify(data, null, 2) }],
+  structuredContent: data,
+});
 const fail = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
 const image = (png: Buffer, caption: string): ToolResult => ({
   content: [
@@ -775,11 +784,33 @@ export function registerTools(server: McpServer): void {
         "application cursor/keypad, insert), alternate screen, cursor position, foreground process, and dims. " +
         "Use this to understand why input behaves unexpectedly without reverse-engineering it.",
       inputSchema: { session_id: sessionId },
+      outputSchema: {
+        id: z.string(),
+        pid: z.number().int(),
+        command: z.string(),
+        foregroundProcess: z.string(),
+        cols: z.number().int(),
+        rows: z.number().int(),
+        status: z.string(),
+        ageSeconds: z.number(),
+        cursor: z.object({ row: z.number().int(), col: z.number().int() }),
+        altScreen: z.boolean(),
+        modes: z.object({
+          applicationCursorKeys: z.boolean(),
+          applicationKeypad: z.boolean(),
+          bracketedPaste: z.boolean(),
+          insert: z.boolean(),
+          mouseTracking: z.string(),
+          sendFocus: z.boolean(),
+          originMode: z.boolean(),
+          wraparound: z.boolean(),
+        }),
+      },
     },
     safe(async ({ session_id }) => {
       // Flush pending output so mode flags reflect the latest escape sequences.
       await snapshotText(getSession(session_id));
-      return ok(JSON.stringify(sessionInfo(getSession(session_id)), null, 2));
+      return okStructured({ ...sessionInfo(getSession(session_id)) });
     }),
   );
 
@@ -792,18 +823,12 @@ export function registerTools(server: McpServer): void {
 
   const commandResult = (session: ReturnType<typeof getSession>): ToolResult => {
     const last = session.commands[session.commands.length - 1];
-    return ok(
-      JSON.stringify(
-        {
-          command: last.command,
-          exit_code: last.exitCode,
-          duration_ms: last.durationMs,
-          output: last.output,
-        },
-        null,
-        2,
-      ),
-    );
+    return okStructured({
+      command: last.command,
+      exit_code: last.exitCode,
+      duration_ms: last.durationMs,
+      output: last.output,
+    });
   };
 
   server.registerTool(
@@ -819,6 +844,12 @@ export function registerTools(server: McpServer): void {
       inputSchema: {
         session_id: sessionId,
         timeout_ms: z.number().int().min(50).max(600000).default(30000),
+      },
+      outputSchema: {
+        command: z.string().describe("The command line as typed at the prompt"),
+        exit_code: z.number().int().nullable().describe("Exit code (null if the shell did not report one)"),
+        duration_ms: z.number().describe("Wall-clock runtime"),
+        output: z.string().describe("The command's output only (no prompt, no screen)"),
       },
     },
     safe(async ({ session_id, timeout_ms }) => {
@@ -888,16 +919,40 @@ export function registerTools(server: McpServer): void {
       title: "List terminal sessions",
       description: "List all sessions with pid, command, dimensions, status, and age.",
       inputSchema: {},
+      outputSchema: {
+        sessions: z.array(
+          z.object({
+            id: z.string(),
+            pid: z.number().int(),
+            command: z.string(),
+            cols: z.number().int(),
+            rows: z.number().int(),
+            status: z.string(),
+            ageSeconds: z.number().int(),
+          }),
+        ),
+      },
     },
     safe(async () => {
-      const sessions = listSessions();
-      if (sessions.length === 0) return ok("No active sessions.");
-      const rows = sessions.map((s) => {
-        const state = s.exited ? `exited(${s.exitCode})` : "running";
-        const age = Math.round((Date.now() - s.createdAt) / 1000);
-        return `${s.id}  pid=${s.pty.pid}  ${s.term.cols}x${s.term.rows}  ${state}  ${age}s  ${s.command}`;
-      });
-      return ok(rows.join("\n"));
+      const sessions = listSessions().map((s) => ({
+        id: s.id,
+        pid: s.pty.pid,
+        command: s.command,
+        cols: s.term.cols,
+        rows: s.term.rows,
+        status: s.exited ? `exited(${s.exitCode})` : "running",
+        ageSeconds: Math.round((Date.now() - s.createdAt) / 1000),
+      }));
+      const text =
+        sessions.length === 0
+          ? "No active sessions."
+          : sessions
+              .map(
+                (s) =>
+                  `${s.id}  pid=${s.pid}  ${s.cols}x${s.rows}  ${s.status}  ${s.ageSeconds}s  ${s.command}`,
+              )
+              .join("\n");
+      return okStructured({ sessions }, text);
     }),
   );
 

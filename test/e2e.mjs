@@ -32,6 +32,13 @@ const { child, call, rpc } = await startServer({ TERMINAL_DRIVER_MCP_RECORDING_D
     byName.session_write?.annotations?.readOnlyHint === false,
     JSON.stringify(byName.session_write?.annotations),
   );
+  check(
+    "typed tools advertise an outputSchema",
+    !!byName.session_info?.outputSchema?.properties?.modes &&
+      !!byName.session_list?.outputSchema?.properties?.sessions &&
+      !!byName.session_wait_command?.outputSchema?.properties?.exit_code,
+    JSON.stringify(Object.keys(byName.session_info?.outputSchema?.properties ?? {})),
+  );
 }
 
 // --- vim scenario ---
@@ -432,6 +439,22 @@ const info = r.isError ? {} : JSON.parse(r.text);
 check("session_info reports alt screen", info.altScreen === true, r.text);
 check("session_info reports bracketed paste", info.modes?.bracketedPaste === true, r.text);
 check("session_info reports mouse tracking enabled", info.modes?.mouseTracking !== "none", r.text);
+{
+  const res = await rpc("tools/call", { name: "session_info", arguments: { session_id: "info" } });
+  const sc = res.result?.structuredContent;
+  check(
+    "session_info returns typed structuredContent",
+    sc?.modes?.bracketedPaste === true && typeof sc?.pid === "number",
+    JSON.stringify(sc),
+  );
+  const listRes = await rpc("tools/call", { name: "session_list", arguments: {} });
+  const sessions = listRes.result?.structuredContent?.sessions;
+  check(
+    "session_list returns typed structuredContent",
+    Array.isArray(sessions) && sessions.some((s) => s.id === "info" && s.status === "running"),
+    JSON.stringify(sessions),
+  );
+}
 
 // --- mouse click round-trips as SGR when the app is listening ---
 // The same session has mouse tracking on; make it echo received bytes.
@@ -590,6 +613,19 @@ await call("session_kill", { session_id: "cells" });
     !cr.isError && cmd?.output?.includes("si-marker-42") && cmd?.exit_code === 0,
     cr.text,
   );
+  {
+    // Same call over raw RPC: the result must carry typed structuredContent.
+    const res = await si.rpc("tools/call", {
+      name: "session_wait_command",
+      arguments: { session_id: "si", timeout_ms: 8000 },
+    });
+    const sc = res.result?.structuredContent;
+    check(
+      "session_wait_command returns typed structuredContent",
+      sc?.exit_code === 0 && typeof sc?.output === "string" && typeof sc?.duration_ms === "number",
+      JSON.stringify(sc),
+    );
+  }
 
   await si.call("session_write", { session_id: "si", input: "false", special_keys: ["enter"] });
   cr = await si.call("session_wait_command", { session_id: "si", timeout_ms: 8000 });
