@@ -37,8 +37,10 @@ const IDLE_TIMEOUT_TIP =
 // torn frame shows stale cells that read as app bugs. After a match, let
 // output go briefly quiet (measured from the last byte, so an already-stable
 // screen adds ~no latency) before taking the snapshot that gets returned.
-// The cap keeps continuously-animating UIs from stalling the wait.
-const AFTER_MATCH_SETTLE = { idleMs: 60, capMs: 500 };
+// The cap keeps continuously-animating UIs from stalling the wait. idleMs
+// matches the afterWrite settle; real frame tears are sub-16ms, so 80ms
+// bridges them with margin.
+const AFTER_MATCH_SETTLE = { idleMs: 80, capMs: 500 };
 
 async function settledSnapshot(session: TerminalSession): Promise<string> {
   const deadline = Date.now() + AFTER_MATCH_SETTLE.capMs;
