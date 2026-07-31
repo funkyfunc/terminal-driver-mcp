@@ -33,6 +33,22 @@ async function patternTimeoutHint(session: TerminalSession, pattern: RegExp): Pr
 const IDLE_TIMEOUT_TIP =
   " The app may be redrawing continuously (spinner, clock, progress bar); if you know what should appear, wait for that pattern instead.";
 
+// Frame-tear guard: a pattern often matches mid-repaint, and returning that
+// torn frame shows stale cells that read as app bugs. After a match, let
+// output go briefly quiet (measured from the last byte, so an already-stable
+// screen adds ~no latency) before taking the snapshot that gets returned.
+// The cap keeps continuously-animating UIs from stalling the wait.
+const AFTER_MATCH_SETTLE = { idleMs: 60, capMs: 500 };
+
+async function settledSnapshot(session: TerminalSession): Promise<string> {
+  const deadline = Date.now() + AFTER_MATCH_SETTLE.capMs;
+  while (!session.exited && Date.now() < deadline) {
+    if (Date.now() - session.lastDataAt >= AFTER_MATCH_SETTLE.idleMs) break;
+    await sleep(15);
+  }
+  return snapshotText(session);
+}
+
 export interface WaitResult {
   ok: boolean;
   elapsedMs: number;
@@ -63,7 +79,16 @@ export async function waitForPattern(
     // Satisfied when the pattern is present (normal) or gone (absent).
     if (pattern.test(screen) !== absent) {
       const how = absent ? `no longer present after ${elapsedMs}ms` : `matched after ${elapsedMs}ms`;
-      return { ok: true, elapsedMs, screen, message: `Pattern ${pattern} ${how}.` };
+      // Return the settled frame, not the possibly-torn one that matched. If
+      // settling changed the answer, say so rather than return a confusing mix.
+      const settled = await settledSnapshot(session);
+      let note = "";
+      if (pattern.test(settled) === absent) {
+        note = absent
+          ? " Note: the pattern REAPPEARED while the frame settled — the app may redraw it periodically."
+          : " Note: the matched content disappeared while the frame settled (it was transient); the returned screen is the settled one.";
+      }
+      return { ok: true, elapsedMs, screen: settled, message: `Pattern ${pattern} ${how}.${note}` };
     }
     // One final snapshot is taken after exit before giving up, since the
     // last output may have arrived alongside process termination.

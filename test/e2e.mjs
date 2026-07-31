@@ -242,6 +242,22 @@ r = await call("session_wait", {
 check("stable_screen wait resolves on static screen", !r.isError && r.text.includes("unchanged"), r.text);
 await call("session_kill", { session_id: "st" });
 
+// --- pattern waits return a SETTLED frame, not a torn mid-repaint one ---
+// The app stays quiet until AFTER session_create's settle returns, then paints
+// a matchable token, pauses mid-frame, and finishes the paint — so the wait is
+// in flight while the frame is torn. It must return the completed frame.
+const tornScript =
+  'import sys,time; time.sleep(1); sys.stdout.write("STATUS: TORN-TOKEN"); sys.stdout.flush(); ' +
+  'time.sleep(0.03); sys.stdout.write(" [chip: ok] frame-complete"); sys.stdout.flush(); time.sleep(60)';
+r = await call("session_create", { session_id: "torn", command: `python3 -c '${tornScript}'` });
+r = await call("session_wait", { session_id: "torn", pattern: "TORN-TOKEN", timeout_ms: 5000 });
+check(
+  "pattern wait returns the settled frame, not the torn one",
+  !r.isError && r.text.includes("frame-complete"),
+  r.text,
+);
+await call("session_kill", { session_id: "torn" });
+
 // --- until "exit": block until the session's process terminates ---
 r = await call("session_create", { session_id: "bye", command: "sleep 0.2; exit 7" });
 r = await call("session_wait", { session_id: "bye", until: "exit", timeout_ms: 5000 });

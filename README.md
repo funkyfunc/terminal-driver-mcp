@@ -89,6 +89,8 @@ Mouse events (`session_click`, `session_drag`) are sent as SGR sequences and onl
 - `idle` / `stable_screen` — output goes quiet / the rendered text stops changing for `idle_ms`. Best-effort: continuously-animating UIs (spinners, progress bars, htop) never settle, so these run to timeout — which still returns the current screen, plus a hint to switch to a pattern wait.
 - `exit` — the session's process terminates (after `:q`, `ctrl+d`, …).
 
+Pattern waits return a **settled frame**: after the regex matches, the driver waits for output to go briefly quiet (measured from the last byte, capped at 500ms so animations can't stall it) and returns the *repainted* screen — never a torn mid-render frame with stale cells. If the matched content vanished while settling (a transient toast), the result says so. This applies to `session_wait`, `session_write`'s `expect`, and `wait` steps in `run_test`/`session_batch`.
+
 Timed-out pattern waits coach recovery: if the pattern actually matched in scrollback (it scrolled off) or matches ignoring case, the error says so.
 
 When a session's screen header says lines have scrolled off (e.g. after a long build), read them back with `session_read(scrollback_lines: N)` — up to 1000 lines are retained.
