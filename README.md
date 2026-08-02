@@ -91,6 +91,8 @@ Mouse events (`session_click`, `session_drag`) are sent as SGR sequences and onl
 
 Pattern waits return a **settled frame**: after the regex matches, the driver waits for output to go briefly quiet (measured from the last byte, capped at 500ms so animations can't stall it) and returns the *repainted* screen — never a torn mid-render frame with stale cells. If the matched content vanished while settling (a transient toast), the result says so. This applies to `session_wait`, `session_write`'s `expect`, and `wait` steps in `run_test`/`session_batch`.
 
+For apps that emit **synchronized output (DECSET 2026)** — ratatui, notcurses, textual, and most modern TUI frameworks — snapshots are *frame-atomic*, not just settled: while the app holds a frame open, every read/wait/assert holds until the frame commits (capped at 250ms, and a frame left open >1s by a crashed app is expired so reads can never wedge). `session_info` reports `modes.synchronizedOutput`.
+
 Timed-out pattern waits coach recovery: if the pattern actually matched in scrollback (it scrolled off) or matches ignoring case, the error says so.
 
 When a session's screen header says lines have scrolled off (e.g. after a long build), read them back with `session_read(scrollback_lines: N)` — up to 1000 lines are retained.

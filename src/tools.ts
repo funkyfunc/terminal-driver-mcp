@@ -803,6 +803,7 @@ export function registerTools(server: McpServer): void {
           mouseTracking: z.string(),
           sendFocus: z.boolean(),
           originMode: z.boolean(),
+          synchronizedOutput: z.boolean(),
           wraparound: z.boolean(),
         }),
       },

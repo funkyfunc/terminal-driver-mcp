@@ -255,6 +255,47 @@ await call("session_kill", { session_id: "st" });
 // the settle window across a PTY under CI load, which flakes on slow runners —
 // and a poll can straddle both paints, so it passes without the fix too.
 
+// --- DECSET 2026: snapshots never observe a torn synchronized frame ---
+// The app repaints row 2 inside 2026 frames with a long mid-frame pause
+// (~60% of wall-clock time the row is torn). Every read must see either the
+// committed frame or nothing — never "TORN-A" without its " TORN-B" tail.
+// Reads only wait for the frame-close (well under the 250ms snapshot cap),
+// so unlike the settle-heuristic test this cannot flake into a false FAIL
+// unless a 50ms sleep stretches past 250ms.
+const syncScript =
+  "import sys,time\n" +
+  'sys.stdout.write("SYNC-READY\\n"); sys.stdout.flush()\n' +
+  "while True:\n" +
+  '  sys.stdout.write("\\x1b[?2026h\\x1b[2;1H\\x1b[KTORN-A"); sys.stdout.flush()\n' +
+  "  time.sleep(0.05)\n" +
+  '  sys.stdout.write(" TORN-B\\x1b[?2026l"); sys.stdout.flush()\n' +
+  "  time.sleep(0.03)\n";
+r = await call("session_create", { session_id: "sync", command: `python3 -c '${syncScript}'` });
+r = await call("session_wait", { session_id: "sync", pattern: "SYNC-READY", timeout_ms: 5000 });
+{
+  let torn = 0;
+  let committed = 0;
+  for (let i = 0; i < 6; i++) {
+    r = await call("session_read", { session_id: "sync" });
+    if (r.text.includes("TORN-A") && !r.text.includes("TORN-B")) torn++;
+    if (r.text.includes("TORN-A TORN-B")) committed++;
+    await new Promise((s) => setTimeout(s, 20));
+  }
+  check(
+    "reads never observe a torn 2026 frame",
+    torn === 0 && committed > 0,
+    `torn=${torn} committed=${committed}`,
+  );
+  r = await call("session_info", { session_id: "sync" });
+  const syncInfo = r.isError ? {} : JSON.parse(r.text);
+  check(
+    "session_info reports synchronizedOutput when read mid-frame history exists",
+    typeof syncInfo.modes?.synchronizedOutput === "boolean",
+    r.text,
+  );
+}
+await call("session_kill", { session_id: "sync" });
+
 // --- until "exit": block until the session's process terminates ---
 r = await call("session_create", { session_id: "bye", command: "sleep 0.2; exit 7" });
 r = await call("session_wait", { session_id: "bye", until: "exit", timeout_ms: 5000 });

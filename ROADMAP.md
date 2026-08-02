@@ -28,6 +28,7 @@ behind them. Nothing below Tier 1 is committed.
   - **Error coaching pack** — unknown key names get "did you mean…?" (aliases + edit distance); pattern-wait timeouts and assert failures hint when the target is in scrollback, wrapped across rows, or differs only by case/spacing; idle-wait timeouts point at pattern waits.
 - **Settled-frame pattern waits (1.1.1)** — after a pattern match, waits let output go briefly quiet (capped 500ms, ~zero cost on already-stable screens) and return the repainted screen instead of a torn mid-render frame; transient matches are flagged. Applies to `session_wait`, `session_write expect`, and `wait` steps. _Field report: a torn frame after `expect` masqueraded as two app bugs._
 - **Structured tool output (1.2.0)** — `session_wait_command`, `session_info`, and `session_list` declare `outputSchema` and return typed `structuredContent` (text block kept for compatibility). `session_read` deliberately excluded: mirroring a full screen into `structuredContent` would double the token cost of every read; revisit if clients learn to dedupe.
+- **Frame-atomic snapshots via DECSET 2026 (1.3.0)** — every snapshot path (reads, waits, asserts, transcripts) holds while the app has a synchronized-output frame open and returns only committed frames (250ms cap; frames left open >1s are expired so reads can never wedge). The true fix for torn mid-render reads on modern TUI frameworks (ratatui/notcurses/textual); the 1.1.1 settle heuristic remains for apps that don't emit the mode. `session_info` exposes `modes.synchronizedOutput`. _Claude Code #37283._ (The "frame committed" wait condition was skipped as redundant — every wait already observes only committed frames.)
 
 ---
 
@@ -42,7 +43,6 @@ behind them. Nothing below Tier 1 is committed.
 
 ## Tier 3 — Domain extensions & framework depth (validated, second-wave)
 
-- **Synchronized-output (DECSET 2026) frame-atomic snapshots** — buffer between `\e[?2026h/l`, surface only complete frames, expose "frame committed" as a wait condition. Fixes torn mid-render reads for apps that emit the mode. _Claude Code #37283._ Partially mitigated in 1.1.1 by the after-match settle on pattern waits (heuristic, app-agnostic); this item remains the true-atomicity fix.
 - **Incremental / dirty-row diff reads + spill-large-output-to-file** — return only changed rows with a token-count field; page huge output to a file the model navigates instead of truncating. _HN: "polling bloats context", "spill instead of truncating."_
 - **Structured "accessibility" / highlights view** — inverse-video spans, active menu/tab/button, prompt-vs-output regions as typed JSON. _Requested on HN; tui-use `highlights` proved it resonates._
 - **Codegen upgrades** — text-anchor "locators" for clicks (resolve to nearest stable label, not raw row/col), assertion-picking during recording, record-at-cursor (append to an existing test). _Playwright codegen._

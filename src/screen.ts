@@ -2,11 +2,33 @@
  * Reading and formatting the emulator's screen state: snapshots, transcripts,
  * regions, cursor position, assertions, and the status header shown to agents.
  */
-import { SCROLLBACK, type TerminalSession } from "./session-manager.js";
+import { SCROLLBACK, syncFrameOpen, type TerminalSession } from "./session-manager.js";
 
-/** Wait until the emulator has parsed everything written to it so far. */
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Synchronized-output (DECSET 2026) frame atomicity: while the app holds a
+// frame open, the buffer is mid-repaint by declaration, so snapshots hold
+// until the frame commits. waitCapMs bounds the hold (real frames close in
+// milliseconds); staleMs expires a frame an app opened and never closed
+// (crash mid-frame), so reads can never wedge.
+const SYNC_FRAME = { waitCapMs: 250, staleMs: 1000 };
+
+/**
+ * Wait until the emulator has parsed everything written to it so far — and,
+ * if the app is inside a synchronized-output frame, until that frame commits
+ * (bounded). Every snapshot path goes through here, so reads, waits, and
+ * asserts all observe committed frames from apps that emit DECSET 2026.
+ */
 async function flush(session: TerminalSession): Promise<void> {
   await new Promise<void>((resolve) => session.term.write("", resolve));
+  const deadline = Date.now() + SYNC_FRAME.waitCapMs;
+  while (syncFrameOpen(session) && !session.exited && Date.now() < deadline) {
+    const openedAt = session.syncOpenedAt;
+    if (openedAt !== undefined && Date.now() - openedAt > SYNC_FRAME.staleMs) break;
+    await sleep(10);
+    // Re-parse pending output each pass so the frame-close can land.
+    await new Promise<void>((resolve) => session.term.write("", resolve));
+  }
 }
 
 /**

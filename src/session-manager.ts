@@ -65,6 +65,8 @@ export interface TerminalSession {
   shellIntegrationSkipped?: string;
   /** Resolves once shell-integration hooks are injected and the shell is ready. */
   integrationReady?: Promise<void>;
+  /** When the app opened the current synchronized-output frame (DECSET 2026), for stale-frame expiry. */
+  syncOpenedAt?: number;
 }
 
 const MAX_LINKS = 200;
@@ -166,7 +168,7 @@ export function createSession(options: CreateSessionOptions): TerminalSession {
     session.recording = Recording.open(id, session.command, cols, rows);
   }
 
-  registerOscHandlers(session);
+  registerParserHandlers(session);
 
   ptyProcess.onData((data) => {
     session.lastDataAt = Date.now();
@@ -240,11 +242,25 @@ async function injectWhenIdle(session: TerminalSession, data: string): Promise<v
   }
 }
 
-// OSC handlers run in-stream during parsing, so the emulator cursor reflects
-// the position where the sequence appeared — which is what we record.
-function registerOscHandlers(session: TerminalSession): void {
+// Parser handlers run in-stream during parsing, so the emulator cursor
+// reflects the position where the sequence appeared — which is what we record.
+// Exported for unit tests that build sessions without a PTY.
+export function registerParserHandlers(session: TerminalSession): void {
   const { term } = session;
   let pendingLink: { url: string; startRow: number; startCol: number } | null = null;
+
+  // DECSET/DECRST 2026 (synchronized output): xterm tracks the mode itself
+  // (term.modes.synchronizedOutputMode); we only stamp when the frame opened
+  // so snapshot gating can expire a frame an app left open. Returning false
+  // lets xterm's own handling proceed.
+  term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
+    if (params.includes(2026)) session.syncOpenedAt = Date.now();
+    return false;
+  });
+  term.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
+    if (params.includes(2026)) session.syncOpenedAt = undefined;
+    return false;
+  });
 
   // OSC 8 ; params ; URI  — opens a hyperlink; OSC 8 ; ;  closes it.
   term.parser.registerOscHandler(8, (data: string) => {
@@ -356,6 +372,7 @@ interface TerminalModes {
   originMode?: boolean;
   reverseWraparoundMode?: boolean;
   sendFocusMode?: boolean;
+  synchronizedOutputMode?: boolean;
   wraparoundMode?: boolean;
 }
 
@@ -376,6 +393,11 @@ export function mouseTrackingMode(session: TerminalSession): string {
 /** True when the app has enabled bracketed paste mode (DECSET 2004). */
 export function bracketedPasteMode(session: TerminalSession): boolean {
   return modes(session).bracketedPasteMode ?? false;
+}
+
+/** True while the app holds a synchronized-output frame open (DECSET 2026). */
+export function syncFrameOpen(session: TerminalSession): boolean {
+  return modes(session).synchronizedOutputMode ?? false;
 }
 
 /** Wrap text in bracketed-paste markers so the app receives it as one atomic paste. */
@@ -402,6 +424,7 @@ export interface SessionInfo {
     mouseTracking: string;
     sendFocus: boolean;
     originMode: boolean;
+    synchronizedOutput: boolean;
     wraparound: boolean;
   };
 }
@@ -430,6 +453,7 @@ export function sessionInfo(session: TerminalSession): SessionInfo {
       mouseTracking: m.mouseTrackingMode ?? "none",
       sendFocus: m.sendFocusMode ?? false,
       originMode: m.originMode ?? false,
+      synchronizedOutput: m.synchronizedOutputMode ?? false,
       wraparound: m.wraparoundMode ?? true,
     },
   };

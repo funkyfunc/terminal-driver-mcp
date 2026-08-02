@@ -5,6 +5,7 @@
 // visible.
 import xterm from "@xterm/headless";
 import { assertScreen, fullTranscript, snapshotCells, snapshotText } from "../dist/screen.js";
+import { registerParserHandlers } from "../dist/session-manager.js";
 
 let failures = 0;
 function check(label, cond, detail = "") {
@@ -103,6 +104,48 @@ function makeSession() {
   check("spacing mismatch hinted", !space.ok && space.message.includes("spacing"), space.message);
   const none = await assertScreen(session, "zebra");
   check("no hint when nothing is close", !none.ok && !none.message.includes("Hint:"), none.message);
+}
+
+// Synchronized-output (DECSET 2026) frame atomicity: snapshots taken while a
+// frame is open must hold until it commits — bounded, and never wedged by a
+// frame the app left open.
+function makeSyncSession() {
+  const session = { ...makeSession(), links: [], commands: [], lastDataAt: Date.now(), exited: false };
+  registerParserHandlers(session);
+  return session;
+}
+
+{
+  const session = makeSyncSession();
+  session.term.write("\x1b[?2026hTORN-A");
+  setTimeout(() => session.term.write(" TORN-B\x1b[?2026l"), 40);
+  const screen = await snapshotText(session);
+  check("snapshot holds until the sync frame commits", screen.includes("TORN-A TORN-B"), screen);
+}
+
+{
+  const session = makeSyncSession();
+  session.term.write("\x1b[?2026hOPEN-FOREVER");
+  session.syncOpenedAt = Date.now() - 5000; // app crashed mid-frame long ago
+  const t0 = Date.now();
+  const screen = await snapshotText(session);
+  check(
+    "stale open frame does not block the snapshot",
+    screen.includes("OPEN-FOREVER") && Date.now() - t0 < 500,
+    `${Date.now() - t0}ms`,
+  );
+}
+
+{
+  const session = makeSyncSession();
+  session.term.write("\x1b[?2026hSTILL-PAINTING");
+  const t0 = Date.now();
+  const screen = await snapshotText(session); // frame never closes: cap applies
+  check(
+    "never-closing frame is capped, snapshot still returns",
+    screen.includes("STILL-PAINTING") && Date.now() - t0 >= 150 && Date.now() - t0 < 1500,
+    `${Date.now() - t0}ms`,
+  );
 }
 
 // snapshotCells: styled runs coalesce, colors/attrs surface, trailing blanks trimmed.
