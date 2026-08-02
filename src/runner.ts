@@ -10,7 +10,7 @@ import { z } from "zod";
 import { matchGolden } from "./golden.js";
 import { decodeHex, encodeKey } from "./keys.js";
 import { type FileResult, jsonReport, junitReport } from "./report.js";
-import { assertScreen, type CellSnapshot, snapshotCells, snapshotText } from "./screen.js";
+import { assertScreenWithin, type CellSnapshot, snapshotCells, snapshotText } from "./screen.js";
 import {
   appCursorMode,
   bracketedPasteMode,
@@ -71,6 +71,7 @@ export const StepSchema = z.union([
       col: z.number().int().min(0).optional(),
       absent: z.boolean().default(false), // invert: assert the text is NOT on screen
       count: z.number().int().min(0).optional(), // assert exactly N occurrences across the screen
+      within_ms: timeoutMs.optional(), // retry the check every 50ms until it passes or this deadline
       soft,
       group,
     })
@@ -95,6 +96,7 @@ export const TestSchema = z
     cols: z.number().int().min(20).max(500).default(120),
     rows: z.number().int().min(5).max(200).default(30),
     shell_integration: z.boolean().default(false),
+    auto_wait: z.boolean().default(false), // write steps wait for quiet output before injecting
     steps: z.array(StepSchema).min(1),
   })
   .strict();
@@ -130,10 +132,11 @@ function describeStep(step: Step): string {
     return `wait ${step.absent ? "for /" : "/"}${step.wait}/${step.absent ? " to clear" : ""}`;
   if ("idle_ms" in step) return `wait ${step.mode} ${step.idle_ms}ms`;
   if ("assert" in step) {
-    if (step.count !== undefined) return `assert "${step.assert}" ×${step.count}`;
+    const within = step.within_ms ? ` (within ${step.within_ms}ms)` : "";
+    if (step.count !== undefined) return `assert "${step.assert}" ×${step.count}${within}`;
     return `assert ${step.absent ? "not " : ""}"${step.assert}"${
       step.row !== undefined ? ` @ row ${step.row}` : ""
-    }${step.col !== undefined ? `, col ${step.col}` : ""}`;
+    }${step.col !== undefined ? `, col ${step.col}` : ""}${within}`;
   }
   if ("resize" in step) return `resize ${step.resize[0]}x${step.resize[1]}`;
   if ("sleep_ms" in step) return `sleep ${step.sleep_ms}ms`;
@@ -170,12 +173,12 @@ async function runStep(
     return { ok: result.ok, detail: result.message };
   }
   if ("assert" in step) {
-    const result = await assertScreen(session, step.assert, {
-      row: step.row,
-      col: step.col,
-      absent: step.absent,
-      count: step.count,
-    });
+    const result = await assertScreenWithin(
+      session,
+      step.assert,
+      { row: step.row, col: step.col, absent: step.absent, count: step.count },
+      step.within_ms,
+    );
     return { ok: result.ok, detail: result.message };
   }
   if ("resize" in step) {
@@ -229,6 +232,8 @@ async function runStep(
   if (session.exited) {
     return { ok: false, detail: `cannot write: session exited (code ${session.exitCode})` };
   }
+  // auto_wait actionability: don't inject while the screen is still mutating.
+  if (session.autoWait) await waitForIdle(session, 80, 2000);
   const app = appCursorMode(session);
   const encoded = step.keys.map((k) => encodeKey(k, app));
   const rawBytes = step.raw_hex ? decodeHex(step.raw_hex) : "";
@@ -295,6 +300,7 @@ export async function runTest(spec: TestSpec, options: RunOptions = {}): Promise
     rows: spec.rows,
     cwd: spec.cwd,
     shellIntegration: spec.shell_integration,
+    autoWait: spec.auto_wait,
   });
 
   const finish = (result: TestResult): TestResult => {

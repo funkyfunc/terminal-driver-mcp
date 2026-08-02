@@ -4,7 +4,13 @@
 // pre-scroll screen — an agent then waits forever for text that is already
 // visible.
 import xterm from "@xterm/headless";
-import { assertScreen, fullTranscript, snapshotCells, snapshotText } from "../dist/screen.js";
+import {
+  assertScreen,
+  assertScreenWithin,
+  fullTranscript,
+  snapshotCells,
+  snapshotText,
+} from "../dist/screen.js";
 import { registerParserHandlers } from "../dist/session-manager.js";
 
 let failures = 0;
@@ -104,6 +110,24 @@ function makeSession() {
   check("spacing mismatch hinted", !space.ok && space.message.includes("spacing"), space.message);
   const none = await assertScreen(session, "zebra");
   check("no hint when nothing is close", !none.ok && !none.message.includes("Hint:"), none.message);
+}
+
+// within_ms retry-ability: the assertion re-checks until it passes or times out.
+{
+  const session = makeSession();
+  session.term.write("waiting...");
+  const single = await assertScreen(session, "LATE-TEXT");
+  check("single-shot assert misses text that has not rendered yet", !single.ok);
+  setTimeout(() => session.term.write("\r\nLATE-TEXT"), 100);
+  const retried = await assertScreenWithin(session, "LATE-TEXT", {}, 3000);
+  check("within_ms retries until the text appears", retried.ok, retried.message);
+  check("late pass reports how long it took", retried.message.includes("became true"), retried.message);
+  const timedOut = await assertScreenWithin(session, "NEVER-TEXT", {}, 200);
+  check(
+    "within_ms timeout reports the retry window and last failure",
+    !timedOut.ok && timedOut.message.includes("retrying for 200ms"),
+    timedOut.message,
+  );
 }
 
 // Synchronized-output (DECSET 2026) frame atomicity: snapshots taken while a

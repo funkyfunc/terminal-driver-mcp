@@ -45,7 +45,7 @@ if (process.argv[2] === "skeleton") {
 // console.log (ours or a dependency's) to stderr.
 console.log = console.error;
 
-const server = new McpServer({ name: "terminal-driver-mcp", version: "1.3.0" });
+const server = new McpServer({ name: "terminal-driver-mcp", version: "1.4.0" });
 registerTools(server);
 
 // A stray error in an async path (e.g. an odd escape sequence from a

@@ -36,7 +36,7 @@ Keep using the built-in terminal for `npm test` and `git status`. Reach for this
 | Tool | Purpose |
 |---|---|
 | `execute_command(command, cwd?, timeout_ms=30000)` | One-shot: run a command to completion in a fresh PTY, return full output + exit code, auto-cleanup. Kills the process and returns partial output on timeout |
-| `session_create(session_id, command?, cwd?, cols=120, rows=30)` | Spawn a persistent PTY session (command via your shell, or an interactive shell) |
+| `session_create(session_id, command?, cwd?, cols=120, rows=30, auto_wait?)` | Spawn a persistent PTY session (command via your shell, or an interactive shell); `auto_wait:true` makes input tools wait for quiet output before injecting |
 | `session_read(session_id, format=text\|raw\|json, scrollback_lines=0)` | Snapshot the rendered screen; `json` returns a structured cell model (colors, styles, cursor, OSC 8 links); `scrollback_lines` also returns output that scrolled off the top |
 | `session_screenshot(session_id, scrollback_lines=0)` | Render the screen (colors, box-drawing, cursor) to a PNG image for vision models |
 | `session_write(session_id, input?, special_keys[]?, paste?, raw_hex?, expect?)` | Type text, special keys (enter, escape, arrows, ctrl+c, f-keys, chords, …), and/or raw bytes; `paste:true` delivers `input` as one atomic bracketed paste; with `expect` it also waits for a regex — a write+wait in one call |
@@ -45,7 +45,7 @@ Keep using the built-in terminal for `npm test` and `git status`. Reach for this
 | `session_info(session_id)` | Report what the app enabled: mouse tracking, bracketed paste, alt screen, cursor keys/keypad, insert, foreground process, dims |
 | `session_wait_command(session_id, timeout_ms)` | Wait for the in-flight shell command to finish, then return its exact output/exit code/duration; returns the last completed command if the shell is idle (needs `shell_integration`) |
 | `session_wait(session_id, until=pattern\|pattern_gone\|idle\|stable_screen\|exit, pattern?, idle_ms?, timeout_ms)` | One synchronization tool: wait for a regex to appear or disappear, for output silence, for a stable rendered screen, or for process exit |
-| `session_assert(session_id, check=contains\|absent\|count\|at\|matches, text, row?, col?, count?)` | Pass/fail screen assertion with contextual diff and near-miss hints; one `check` discriminator instead of a pile of flags |
+| `session_assert(session_id, check=contains\|absent\|count\|at\|matches, text, row?, col?, count?, within_ms?)` | Pass/fail screen assertion with contextual diff and near-miss hints; one `check` discriminator instead of a pile of flags; `within_ms` makes it retry until it passes (Playwright-style) |
 | `session_batch(session_id, steps[], screens_dir?)` | Run a write→wait→assert step sequence against a **live** session in one call — same step grammar as `run_test`, per-step results, stops on first hard failure |
 | `session_region(session_id, row, col, width, height)` | Extract a rectangle of the screen (a pane, status bar, or widget) |
 | `session_resize(session_id, cols, rows)` | Resize PTY + emulator (SIGWINCH reflow) |
@@ -92,6 +92,13 @@ Mouse events (`session_click`, `session_drag`) are sent as SGR sequences and onl
 Pattern waits return a **settled frame**: after the regex matches, the driver waits for output to go briefly quiet (measured from the last byte, capped at 500ms so animations can't stall it) and returns the *repainted* screen — never a torn mid-render frame with stale cells. If the matched content vanished while settling (a transient toast), the result says so. This applies to `session_wait`, `session_write`'s `expect`, and `wait` steps in `run_test`/`session_batch`.
 
 For apps that emit **synchronized output (DECSET 2026)** — ratatui, notcurses, textual, and most modern TUI frameworks — snapshots are *frame-atomic*, not just settled: while the app holds a frame open, every read/wait/assert holds until the frame commits (capped at 250ms, and a frame left open >1s by a crashed app is expired so reads can never wedge). `session_info` reports `modes.synchronizedOutput`.
+
+### Auto-waiting (opt-in)
+
+Two Playwright-style reliability features, both off by default:
+
+- **Retry-able assertions** — `session_assert(within_ms: N)` (or `"within_ms"` on an `assert` step) re-checks every 50ms until the assertion passes or the deadline expires. Assert-right-after-acting without a separate wait call; a pass that needed retries says how long it took.
+- **Actionability preconditions** — `session_create(auto_wait: true)` (or `"auto_wait": true` in a test spec) makes `session_write`/`session_click`/`session_drag` and write steps wait for output to go quiet (80ms, capped at 2s) before injecting, so input never lands on a mid-redraw screen. Adds a little latency per action; skip it for continuously-animating UIs.
 
 Timed-out pattern waits coach recovery: if the pattern actually matched in scrollback (it scrolled off) or matches ignoring case, the error says so.
 
@@ -164,7 +171,7 @@ or ad-hoc via the `run_test` tool. Example script:
 }
 ```
 
-Step types: `{"wait": "<regex>", "absent"?}` (`absent:true` waits until the pattern *disappears*), `{"idle_ms": N, "mode"?: "silence"|"stable_screen"}`, `{"write": "text", "keys": [...], "raw_hex"?, "paste"?}` (`paste:true` sends the text as one bracketed paste), `{"assert": "text", "row"?, "col"?, "absent"?, "count"?}` (`absent:true` asserts the text is *not* on screen; `count:N` asserts exactly N occurrences), `{"match_screen": "name", "mask"?: ["<regex>"]}`, `{"resize": [cols, rows]}`, `{"sleep_ms": N}`, `{"command_exit": N}` (with `"shell_integration": true`), `{"expect_exit": code}`. Execution stops at the first failing step and the report includes the final screen. The same steps run against a live session via `session_batch`.
+Step types: `{"wait": "<regex>", "absent"?}` (`absent:true` waits until the pattern *disappears*), `{"idle_ms": N, "mode"?: "silence"|"stable_screen"}`, `{"write": "text", "keys": [...], "raw_hex"?, "paste"?}` (`paste:true` sends the text as one bracketed paste), `{"assert": "text", "row"?, "col"?, "absent"?, "count"?, "within_ms"?}` (`absent:true` asserts the text is *not* on screen; `count:N` asserts exactly N occurrences; `within_ms:N` retries until it passes), `{"match_screen": "name", "mask"?: ["<regex>"]}`, `{"resize": [cols, rows]}`, `{"sleep_ms": N}`, `{"command_exit": N}` (with `"shell_integration": true`), `{"expect_exit": code}`. A spec-level `"auto_wait": true` makes write steps wait for quiet output before injecting. Execution stops at the first failing step and the report includes the final screen. The same steps run against a live session via `session_batch`.
 
 **Soft assertions & grouping.** Any assertion step (`assert`, `match_screen`, `command_exit`, `expect_exit`) can set `"soft": true` — a soft failure is recorded and still fails the test, but execution continues instead of stopping, so a single run surfaces every problem. Any step can carry a `"group": "label"`; consecutive steps sharing a label render as a named section in the CLI output, the trace viewer, and the reporters.
 

@@ -67,6 +67,8 @@ export interface TerminalSession {
   integrationReady?: Promise<void>;
   /** When the app opened the current synchronized-output frame (DECSET 2026), for stale-frame expiry. */
   syncOpenedAt?: number;
+  /** Opt-in actionability: input-injecting tools wait for output to quiesce before sending. */
+  autoWait: boolean;
 }
 
 const MAX_LINKS = 200;
@@ -108,10 +110,12 @@ export interface CreateSessionOptions {
   record?: boolean;
   /** Inject OSC 133 shell integration (interactive shell sessions only). */
   shellIntegration?: boolean;
+  /** Opt-in actionability: wait for quiet output before each input injection. */
+  autoWait?: boolean;
 }
 
 export function createSession(options: CreateSessionOptions): TerminalSession {
-  const { id, command, cols, rows, cwd, record = true, shellIntegration = false } = options;
+  const { id, command, cols, rows, cwd, record = true, shellIntegration = false, autoWait = false } = options;
 
   if (sessions.has(id)) {
     throw new Error(`Session "${id}" already exists. Use session_kill first or pick another id.`);
@@ -163,6 +167,7 @@ export function createSession(options: CreateSessionOptions): TerminalSession {
     links: [],
     commands: [],
     shellIntegration: false,
+    autoWait,
   };
   if (record) {
     session.recording = Recording.open(id, session.command, cols, rows);

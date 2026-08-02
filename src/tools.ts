@@ -12,7 +12,7 @@ import { encodeClick, encodeDrag, encodeWheel, type MouseButton, type WheelDirec
 import { renderPng } from "./render.js";
 import { executeSteps, formatResult, parseTest, runTest, StepSchema } from "./runner.js";
 import {
-  assertScreen,
+  assertScreenWithin,
   fullTranscript,
   snapshotCells,
   snapshotRaw,
@@ -94,6 +94,9 @@ const DESTRUCTIVE = {
 const SETTLE = {
   afterCreate: { idleMs: 150, timeoutMs: 3000 },
   afterWrite: { idleMs: 80, timeoutMs: 2000 },
+  // auto_wait actionability precondition: don't inject input while the screen
+  // is still mutating (bounded, so an animating UI can't block input forever).
+  beforeAction: { idleMs: 80, timeoutMs: 2000 },
   afterResize: { idleMs: 100, timeoutMs: 3000 },
   drainAfterExit: { idleMs: 50, timeoutMs: 1000 },
   // Between input text and trailing keys: let the app finish ingesting a
@@ -117,6 +120,11 @@ async function screenWithHeader(id: string, scrollbackLines = 0): Promise<string
   const screen = await snapshotText(session, scrollbackLines);
   return `${statusHeader(session)}\n${screen}`;
 }
+
+/** auto_wait sessions: hold input until output quiesces (bounded) so keystrokes never land mid-redraw. */
+const actionPrecondition = async (session: ReturnType<typeof getSession>): Promise<void> => {
+  if (session.autoWait && !session.exited) await settle(session, SETTLE.beforeAction);
+};
 
 // Key names typed into 'input' as literal text (braces or backslash escapes)
 // are almost always a mistaken keypress; return a hint instead of sending them.
@@ -171,9 +179,17 @@ export function registerTools(server: McpServer): void {
             "Interactive-shell only (bash/zsh): inject OSC 133 hooks so session_wait_command " +
               "reports each command's exact output and exit code",
           ),
+        auto_wait: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Actionability opt-in: session_write/session_click/session_drag on this session first wait " +
+              "for output to go quiet (80ms, capped at 2s) so input never lands on a mid-redraw screen. " +
+              "Adds a little latency per action; avoid for continuously-animating UIs",
+          ),
       },
     },
-    safe(async ({ session_id, command, cwd, cols, rows, shell_integration }) => {
+    safe(async ({ session_id, command, cwd, cols, rows, shell_integration, auto_wait }) => {
       const session = createSession({
         id: session_id,
         command,
@@ -181,6 +197,7 @@ export function registerTools(server: McpServer): void {
         rows,
         cwd,
         shellIntegration: shell_integration,
+        autoWait: auto_wait,
       });
       log(`created session "${session_id}" pid=${session.pty.pid} cmd=${session.command}`);
       await settle(session, SETTLE.afterCreate);
@@ -347,6 +364,7 @@ export function registerTools(server: McpServer): void {
         }
       }
 
+      await actionPrecondition(session);
       if (input) {
         const writtenAt = Date.now();
         writeToSession(session, paste ? wrapPaste(input) : input);
@@ -458,6 +476,8 @@ export function registerTools(server: McpServer): void {
         "'count' — text occurs exactly 'count' times across the screen (list sizes, duplicate checks). " +
         "'at' — text starts exactly at ('row','col'), wide-character aware. " +
         "'matches' — 'text' is a regex the screen must match (optionally scoped to 'row'). " +
+        "Set within_ms to make the assertion retry-able: it re-checks every 50ms until it passes or the " +
+        "deadline expires — the flake-proof way to assert right after an action, instead of a separate wait. " +
         "Failures include the actual content with context, plus near-miss hints (scrolled off, line-wrapped, " +
         "case/spacing differences).",
       inputSchema: {
@@ -485,9 +505,16 @@ export function registerTools(server: McpServer): void {
           .min(0)
           .optional()
           .describe("Expected number of occurrences (required for check:'count')"),
+        within_ms: z
+          .number()
+          .int()
+          .min(50)
+          .max(120000)
+          .optional()
+          .describe("Retry the check every 50ms until it passes or this deadline (omit: single check)"),
       },
     },
-    safe(async ({ session_id, check, text, row, col, count }) => {
+    safe(async ({ session_id, check, text, row, col, count, within_ms }) => {
       const session = getSession(session_id);
       // Reject parameter/check mismatches up front with the fix spelled out —
       // cheaper for the agent than a confusingly-scoped assertion result.
@@ -506,13 +533,18 @@ export function registerTools(server: McpServer): void {
       if (check === "count" && row !== undefined) {
         return fail("check:'count' is whole-screen; it cannot be scoped to a row.");
       }
-      const result = await assertScreen(session, text, {
-        row,
-        col,
-        absent: check === "absent",
-        count: check === "count" ? count : undefined,
-        regex: check === "matches",
-      });
+      const result = await assertScreenWithin(
+        session,
+        text,
+        {
+          row,
+          col,
+          absent: check === "absent",
+          count: check === "count" ? count : undefined,
+          regex: check === "matches",
+        },
+        within_ms,
+      );
       return result.ok ? ok(result.message) : fail(result.message);
     }),
   );
@@ -581,8 +613,8 @@ export function registerTools(server: McpServer): void {
         "failure and continue). Returns a per-step report plus the final screen — far fewer round-trips and " +
         "tokens than issuing each step as its own tool call. " +
         'Steps: {"write","keys","raw_hex","paste"?} | {"wait":"<regex>","absent"?} | {"idle_ms","mode"?} | ' +
-        '{"assert","row"?,"col"?,"absent"?,"count"?} | {"resize":[c,r]} | {"sleep_ms"} | {"command_exit"} | ' +
-        '{"expect_exit"} | {"match_screen","mask"?}.',
+        '{"assert","row"?,"col"?,"absent"?,"count"?,"within_ms"?} | {"resize":[c,r]} | {"sleep_ms"} | ' +
+        '{"command_exit"} | {"expect_exit"} | {"match_screen","mask"?}.',
       inputSchema: {
         session_id: sessionId,
         steps: z.array(StepSchema).min(1).max(50).describe("Steps to run, in run_test step format"),
@@ -618,10 +650,11 @@ export function registerTools(server: McpServer): void {
       description:
         "Replay a JSON test script against a fresh PTY session and return pass/fail per step — deterministic, " +
         "no agent in the loop, also runnable in CI via `terminal-driver-mcp run <file>`. Spec: " +
-        '{"name", "command", "cwd"?, "cols"?, "rows"?, "steps": [...]} where each step is one of ' +
+        '{"name", "command", "cwd"?, "cols"?, "rows"?, "auto_wait"?, "steps": [...]} ' +
+        "(auto_wait: write steps hold until output quiesces before injecting) where each step is one of " +
         '{"wait": "<regex>", "timeout_ms"?, "absent"?: true} | {"idle_ms": N, "mode"?: "silence"|"stable_screen"} | ' +
         '{"write": "text", "keys": ["enter", ...], "paste"?: true} | ' +
-        '{"assert": "text", "row"?: N, "col"?: N, "absent"?: true, "count"?: N} | ' +
+        '{"assert": "text", "row"?: N, "col"?: N, "absent"?: true, "count"?: N, "within_ms"?: N} | ' +
         '{"resize": [cols, rows]} | {"sleep_ms": N} | {"command_exit": code} | ' +
         '{"match_screen": "name", "mask"?: ["<regex>"]} | {"expect_exit": code}. ' +
         'Any step may carry a "group" label (named section in reports/trace); assertion steps ' +
@@ -741,6 +774,7 @@ export function registerTools(server: McpServer): void {
       const bytes = button.startsWith("wheel_")
         ? encodeWheel(button as WheelDirection, row, col, count)
         : encodeClick(button as MouseButton, row, col, count);
+      await actionPrecondition(session);
       writeToSession(session, bytes);
       await settle(session, SETTLE.afterWrite);
       return ok(await screenWithHeader(session_id));
@@ -768,6 +802,7 @@ export function registerTools(server: McpServer): void {
       const session = getSession(session_id);
       const blocked = mouseGuard(session);
       if (blocked) return fail(blocked);
+      await actionPrecondition(session);
       writeToSession(session, encodeDrag(button as MouseButton, from_row, from_col, to_row, to_col));
       await settle(session, SETTLE.afterWrite);
       return ok(await screenWithHeader(session_id));

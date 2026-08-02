@@ -296,6 +296,36 @@ r = await call("session_wait", { session_id: "sync", pattern: "SYNC-READY", time
 }
 await call("session_kill", { session_id: "sync" });
 
+// --- within_ms: retry-able assertions absorb render latency ---
+r = await call("session_create", { session_id: "late", command: "sleep 2.5; echo DELAYED-MARKER; sleep 60" });
+r = await call("session_assert", { session_id: "late", text: "DELAYED-MARKER" });
+check("single-shot assert fails before the text renders", r.isError, r.text);
+r = await call("session_assert", { session_id: "late", text: "DELAYED-MARKER", within_ms: 8000 });
+check(
+  "within_ms assert retries until the text appears",
+  !r.isError && r.text.includes("became true"),
+  r.text,
+);
+await call("session_kill", { session_id: "late" });
+
+// --- auto_wait: input-injecting tools precondition on quiet output ---
+r = await call("session_create", { session_id: "aw", command: "cat", auto_wait: true });
+r = await call("session_write", { session_id: "aw", input: "AUTOWAIT-OK", special_keys: ["enter"] });
+r = await call("session_wait", { session_id: "aw", pattern: "AUTOWAIT-OK", timeout_ms: 5000 });
+check("auto_wait session still accepts input normally", !r.isError, r.text);
+await call("session_kill", { session_id: "aw" });
+
+// run_test spec accepts auto_wait + within_ms and stays green.
+r = await call("run_test", {
+  test_json: JSON.stringify({
+    name: "auto-wait spec",
+    command: "printf 'GO\\n'; cat",
+    auto_wait: true,
+    steps: [{ wait: "GO" }, { write: "autotest", keys: ["enter"] }, { assert: "autotest", within_ms: 3000 }],
+  }),
+});
+check("run_test honors auto_wait and within_ms", !r.isError && r.text.startsWith("PASS"), r.text);
+
 // --- until "exit": block until the session's process terminates ---
 r = await call("session_create", { session_id: "bye", command: "sleep 0.2; exit 7" });
 r = await call("session_wait", { session_id: "bye", until: "exit", timeout_ms: 5000 });

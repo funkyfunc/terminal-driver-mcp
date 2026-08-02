@@ -266,6 +266,34 @@ export interface AssertResult {
   message: string;
 }
 
+/**
+ * Retry-ability (Playwright-style): re-run the assertion every 50ms until it
+ * passes or `withinMs` elapses. A pass that needed retries says how long it
+ * took; the final failure carries the last (freshest) diagnostic.
+ */
+export async function assertScreenWithin(
+  session: TerminalSession,
+  expected: string,
+  opts: AssertOptions,
+  withinMs?: number,
+): Promise<AssertResult> {
+  if (!withinMs) return assertScreen(session, expected, opts);
+  const start = Date.now();
+  for (;;) {
+    const result = await assertScreen(session, expected, opts);
+    const elapsed = Date.now() - start;
+    if (result.ok) {
+      return elapsed > 100
+        ? { ok: true, message: `${result.message}\n(became true after ${elapsed}ms of retrying)` }
+        : result;
+    }
+    if (elapsed >= withinMs) {
+      return { ok: false, message: `Still failing after retrying for ${withinMs}ms.\n${result.message}` };
+    }
+    await sleep(50);
+  }
+}
+
 /** Modifiers for {@link assertScreen}; all optional and mutually constrained. */
 export interface AssertOptions {
   row?: number; // restrict to this 0-based visible row

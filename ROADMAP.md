@@ -28,16 +28,18 @@ behind them. Nothing below Tier 1 is committed.
   - **Error coaching pack** — unknown key names get "did you mean…?" (aliases + edit distance); pattern-wait timeouts and assert failures hint when the target is in scrollback, wrapped across rows, or differs only by case/spacing; idle-wait timeouts point at pattern waits.
 - **Settled-frame pattern waits (1.1.1)** — after a pattern match, waits let output go briefly quiet (capped 500ms, ~zero cost on already-stable screens) and return the repainted screen instead of a torn mid-render frame; transient matches are flagged. Applies to `session_wait`, `session_write expect`, and `wait` steps. _Field report: a torn frame after `expect` masqueraded as two app bugs._
 - **Structured tool output (1.2.0)** — `session_wait_command`, `session_info`, and `session_list` declare `outputSchema` and return typed `structuredContent` (text block kept for compatibility). `session_read` deliberately excluded: mirroring a full screen into `structuredContent` would double the token cost of every read; revisit if clients learn to dedupe.
+- **Opt-in auto-waiting (1.4.0)** — `session_assert` / the `assert` step take `within_ms` (re-check every 50ms until pass or deadline — Cypress retry-ability, works with every `check`); `session_create` / the test spec take `auto_wait: true` (input-injecting tools and write steps wait for quiet output, 80ms/2s cap, before injecting — Playwright actionability). Both off by default so timing semantics only change by explicit opt-in. _TUA-Bench shows pass@5 reliability is the field's weak spot._
 - **Frame-atomic snapshots via DECSET 2026 (1.3.0)** — every snapshot path (reads, waits, asserts, transcripts) holds while the app has a synchronized-output frame open and returns only committed frames (250ms cap; frames left open >1s are expired so reads can never wedge). The true fix for torn mid-render reads on modern TUI frameworks (ratatui/notcurses/textual); the 1.1.1 settle heuristic remains for apps that don't emit the mode. `session_info` exposes `modes.synchronizedOutput`. _Claude Code #37283._ (The "frame committed" wait condition was skipped as redundant — every wait already observes only committed frames.)
 
 ---
 
 ## Tier 2 — Reliability & CI adoption
 
-- **Auto-waiting baked into actions** — promote `wait-for-idle`/pattern to implicit preconditions before each keystroke/click, and make screen assertions auto-retry to a timeout. Kills the dominant flake source. Deferred deliberately: it changes action *timing semantics*, so it needs an explicit opt-in and careful defaults rather than an unsupervised change. _Playwright actionability / Cypress retry-ability; TUA-Bench shows pass@5 reliability is the field's weak spot._
-- **Publish `server.json` to the MCP registry** — the manifest exists; the actual `mcp-publisher` submission needs the maintainer's GitHub OIDC auth (a user-only step, like npm trusted publishing).
+_All Tier 2 items are shipped or dropped as of 1.4.0._
 
 ### Considered and dropped
+
+- **Publish `server.json` to the MCP registry** — the manifest exists and ships in the package; the actual `mcp-publisher` submission needs the maintainer's GitHub OIDC auth, and the maintainer has opted not to pursue it for now.
 
 - **ANSI / escape-sequence injection sanitization** — dropped after checking our capture path: all plain-text/JSON output (`session_read text`/`json`, `session_last_command`, command records) comes from xterm's `translateToString`, which returns rendered cell glyphs — the emulator has already consumed escape sequences into cell attributes, so no raw ANSI reaches the model. The only raw path is `session_read format: "raw"`, which is intentional and labeled. A sanitizer there would be dead code that could corrupt legitimate box-drawing. Revisit only if a concrete bypass is demonstrated.
 
