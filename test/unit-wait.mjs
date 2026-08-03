@@ -66,6 +66,35 @@ const paint = (session, data) => {
   );
 }
 
+// Timeout near-miss: the closest screen line to the pattern's literal part is
+// shown, catching wrong/overspecified regexes (e.g. truncated status lines).
+{
+  const session = makeSession();
+  paint(session, "STATUS: rea"); // truncated — the pattern expects the full word
+  const r = await waitForPattern(session, /STATUS: ready/, 300);
+  check(
+    "timeout shows the closest screen line",
+    !r.ok && r.message.includes("looks close") && r.message.includes("STATUS: rea"),
+    r.message,
+  );
+}
+{
+  const session = makeSession();
+  paint(session, "MENU-TITLE-XYZ trailing");
+  const r = await waitForPattern(session, /MENU-TITLE-XYZ$/, 300); // literal present, anchor wrong
+  check(
+    "timeout flags a line containing the literal when the regex around it fails",
+    !r.ok && r.message.includes("looks close") && r.message.includes("MENU-TITLE-XYZ"),
+    r.message,
+  );
+}
+{
+  const session = makeSession();
+  paint(session, "nothing similar here");
+  const r = await waitForPattern(session, /COMPLETELY-DIFFERENT/, 300);
+  check("no closest-line hint when nothing is close", !r.ok && !r.message.includes("looks close"), r.message);
+}
+
 // A continuously-painting app cannot stall the wait past the settle cap.
 {
   const session = makeSession();

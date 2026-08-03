@@ -9,23 +9,58 @@ import { SCROLLBACK, type TerminalSession } from "./session-manager.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Longest run of literal characters in a regex source (metacharacters split runs). */
+function longestLiteralFragment(source: string): string {
+  const parts = source.split(/[\\^$.*+?()[\]{}|]+/);
+  return parts.reduce((a, b) => (b.length > a.length ? b : a), "");
+}
+
+/**
+ * How much of `fragment` appears in `line`: the full fragment, or its longest
+ * prefix/suffix (catches truncated/elided content — the common wrong-regex
+ * case where the real screen line is close but not quite the pattern).
+ */
+function partialMatchScore(line: string, fragment: string): number {
+  if (line.includes(fragment)) return fragment.length;
+  for (let k = fragment.length - 1; k >= 4; k--) {
+    if (line.includes(fragment.slice(0, k)) || line.includes(fragment.slice(fragment.length - k))) {
+      return k;
+    }
+  }
+  return 0;
+}
+
 /**
  * On a pattern-wait timeout, probe the near-misses an agent can actually act
- * on: the pattern already scrolled off-screen, or it differs only by case.
- * Returns "" when neither applies, so the hint costs tokens only when useful.
+ * on: the pattern already scrolled off-screen, it differs only by case, or a
+ * screen line comes close to the pattern's literal part (wrong/overspecified
+ * regex). Returns "" when nothing applies, so the hint costs tokens only when
+ * useful.
  */
 async function patternTimeoutHint(session: TerminalSession, pattern: RegExp): Promise<string> {
   const withScrollback = await snapshotText(session, SCROLLBACK);
   if (pattern.test(withScrollback)) {
     return " Note: the pattern DOES match in scrollback — it likely scrolled off-screen; view it with session_read scrollback_lines.";
   }
+  const screen = await snapshotText(session);
   try {
     const insensitive = new RegExp(pattern.source, `${pattern.flags}i`);
-    if (insensitive.test(await snapshotText(session))) {
+    if (insensitive.test(screen)) {
       return " Note: the pattern matches ignoring case — check the capitalization.";
     }
   } catch {
     /* flags already had i, or exotic pattern — no hint */
+  }
+  const fragment = longestLiteralFragment(pattern.source).slice(0, 60);
+  if (fragment.length >= 4) {
+    let best: { row: number; line: string; score: number } | undefined;
+    for (const [row, line] of screen.split("\n").entries()) {
+      const score = partialMatchScore(line, fragment);
+      if (score > (best?.score ?? 0)) best = { row, line, score };
+    }
+    if (best && best.score >= Math.max(4, Math.ceil(fragment.length / 2))) {
+      return ` Note: no match, but row ${best.row} looks close: "${best.line.trim()}" — check the pattern against it.`;
+    }
   }
   return "";
 }

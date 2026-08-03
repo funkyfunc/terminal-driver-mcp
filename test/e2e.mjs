@@ -421,6 +421,32 @@ r = await call("session_write", {
 check("write-then-expect times out with final screen", r.isError && r.text.includes("Timed out"), r.text);
 await call("session_kill", { session_id: "we" });
 
+// --- expect hygiene: stale pre-existing matches are flagged ---
+r = await call("session_create", { session_id: "stale", command: "printf 'READY-STALE\\n'; cat" });
+r = await call("session_write", {
+  session_id: "stale",
+  input: "x",
+  special_keys: ["enter"],
+  expect: "READY-STALE",
+  expect_timeout_ms: 5000,
+});
+check(
+  "expect matching pre-existing screen content is flagged as possibly stale",
+  !r.isError && r.text.includes("already on screen BEFORE"),
+  r.text,
+);
+await call("session_kill", { session_id: "stale" });
+
+// --- timeout near-miss: closest screen line is offered ---
+r = await call("session_create", { session_id: "close", command: "printf 'STATUS: rea\\n'; sleep 60" });
+r = await call("session_wait", { session_id: "close", pattern: "STATUS: ready", timeout_ms: 600 });
+check(
+  "wait timeout shows the closest screen line",
+  r.isError && r.text.includes("looks close") && r.text.includes("STATUS: rea"),
+  r.text,
+);
+await call("session_kill", { session_id: "close" });
+
 // --- bracketed paste: multi-line text lands as ONE atomic paste ---
 // A raw reader that enables paste mode (DECSET 2004) and hex-echoes its input.
 const pasteEchoScript =

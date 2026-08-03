@@ -1,6 +1,6 @@
 {
   "name": "terminal-driver-mcp",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "mcpName": "io.github.funkyfunc/terminal-driver-mcp",
   "description": "A real interactive terminal for AI agents (MCP). Run and test vim, htop, gdb, REPLs, and any TUI — things the built-in fire-and-forget terminal can't touch.",
   "type": "module",

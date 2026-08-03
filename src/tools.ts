@@ -364,6 +364,11 @@ export function registerTools(server: McpServer): void {
         }
       }
 
+      // Stale-match guard: if the expect pattern already matches the screen
+      // BEFORE anything is written, an instant "match" after the write proves
+      // nothing about this input — flag it in the result.
+      const preMatched = regex ? regex.test(await snapshotText(session)) : false;
+
       await actionPrecondition(session);
       if (input) {
         const writtenAt = Date.now();
@@ -381,7 +386,14 @@ export function registerTools(server: McpServer): void {
 
       if (regex) {
         const result = await waitForPattern(session, regex, expect_timeout_ms);
-        const text = `${result.message}\n${statusHeader(session)}\n${result.screen}`;
+        const staleNote =
+          result.ok && preMatched
+            ? "\nNote: the expect pattern was already on screen BEFORE this write, so this match may be " +
+              "stale content rather than a result of the input. If the action should change the screen, " +
+              "first wait for the old state to clear (session_wait until:'pattern_gone'), or expect text " +
+              "unique to the new state."
+            : "";
+        const text = `${result.message}${staleNote}\n${statusHeader(session)}\n${result.screen}`;
         return result.ok ? ok(text) : fail(text);
       }
       await settle(session, SETTLE.afterWrite);

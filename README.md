@@ -100,7 +100,7 @@ Two Playwright-style reliability features, both off by default:
 - **Retry-able assertions** — `session_assert(within_ms: N)` (or `"within_ms"` on an `assert` step) re-checks every 50ms until the assertion passes or the deadline expires. Assert-right-after-acting without a separate wait call; a pass that needed retries says how long it took.
 - **Actionability preconditions** — `session_create(auto_wait: true)` (or `"auto_wait": true` in a test spec) makes `session_write`/`session_click`/`session_drag` and write steps wait for output to go quiet (80ms, capped at 2s) before injecting, so input never lands on a mid-redraw screen. Adds a little latency per action; skip it for continuously-animating UIs.
 
-Timed-out pattern waits coach recovery: if the pattern actually matched in scrollback (it scrolled off) or matches ignoring case, the error says so.
+Timed-out pattern waits coach recovery: if the pattern actually matched in scrollback (it scrolled off), matches ignoring case, or a screen line comes close to the pattern's literal part (wrong/overspecified regex, truncated content), the error says so — including the closest line and its row. And when a `session_write` `expect` pattern was already on screen *before* the write, the result flags the match as possibly stale content, with the fix (`until:"pattern_gone"` on the old state, or expect text unique to the new state).
 
 When a session's screen header says lines have scrolled off (e.g. after a long build), read them back with `session_read(scrollback_lines: N)` — up to 1000 lines are retained.
 
