@@ -54,6 +54,8 @@ export interface TerminalSession {
   lastDataAt: number;
   exited: boolean;
   exitCode: number | null;
+  /** When the child process exited — drives the exited-session TTL reaper. */
+  exitedAt?: number;
   command: string;
   createdAt: number;
   recording?: Recording;
@@ -94,7 +96,35 @@ export function getSession(id: string): TerminalSession {
   return session;
 }
 
+// Sessions stay readable after their process exits (post-mortem screen reads),
+// but not forever: a session whose process exited longer than the TTL ago is
+// reaped. Lazy — the sweep runs on list/create, when clutter is observable or
+// a slot is needed. Recordings survive the reap.
+const DEFAULT_EXITED_TTL_MS = 60 * 60 * 1000;
+
+function exitedTtlMs(): number {
+  const raw = process.env.TERMINAL_DRIVER_MCP_EXITED_TTL_MS;
+  if (raw === undefined || raw === "") return DEFAULT_EXITED_TTL_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_EXITED_TTL_MS;
+}
+
+function reapExpiredSessions(): void {
+  const ttl = exitedTtlMs();
+  if (ttl === 0) return; // 0 disables reaping
+  const now = Date.now();
+  for (const session of [...sessions.values()]) {
+    if (session.exited && session.exitedAt !== undefined && now - session.exitedAt > ttl) {
+      console.error(
+        `[terminal-driver-mcp] reaping session "${session.id}" (exited ${Math.round((now - session.exitedAt) / 1000)}s ago, TTL ${ttl}ms)`,
+      );
+      void killSession(session.id);
+    }
+  }
+}
+
 export function listSessions(): TerminalSession[] {
+  reapExpiredSessions();
   return [...sessions.values()];
 }
 
@@ -117,6 +147,7 @@ export interface CreateSessionOptions {
 export function createSession(options: CreateSessionOptions): TerminalSession {
   const { id, command, cols, rows, cwd, record = true, shellIntegration = false, autoWait = false } = options;
 
+  reapExpiredSessions();
   if (sessions.has(id)) {
     throw new Error(`Session "${id}" already exists. Use session_kill first or pick another id.`);
   }
@@ -125,12 +156,28 @@ export function createSession(options: CreateSessionOptions): TerminalSession {
       `Session limit (${MAX_SESSIONS}) reached. Use session_list to inspect and session_kill to free one.`,
     );
   }
+  let effectiveCwd: string;
   if (cwd !== undefined) {
     // A bad cwd makes posix_spawn fail with an unhelpful error; check upfront.
     try {
       if (!statSync(cwd).isDirectory()) throw new Error("not a directory");
     } catch {
       throw new Error(`cwd "${cwd}" is not an existing directory.`);
+    }
+    effectiveCwd = cwd;
+  } else {
+    // The default is the server's own cwd — which can silently vanish if the
+    // directory the server was launched from is renamed/deleted. Spawning a
+    // shell there "works" but the shell exits 1 with zero output; catch it
+    // here with the actual cause instead.
+    try {
+      effectiveCwd = process.cwd(); // throws if the directory is gone
+      if (!statSync(effectiveCwd).isDirectory()) throw new Error("gone");
+    } catch {
+      throw new Error(
+        "The server's working directory no longer exists (moved or deleted since the MCP server " +
+          "started). Pass 'cwd' explicitly, or restart the MCP server.",
+      );
     }
   }
 
@@ -143,7 +190,7 @@ export function createSession(options: CreateSessionOptions): TerminalSession {
     name: "xterm-256color",
     cols,
     rows,
-    cwd: cwd ?? process.cwd(),
+    cwd: effectiveCwd,
     env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" } as {
       [key: string]: string;
     },
@@ -203,6 +250,7 @@ export function createSession(options: CreateSessionOptions): TerminalSession {
   ptyProcess.onExit(({ exitCode }) => {
     session.exited = true;
     session.exitCode = exitCode;
+    session.exitedAt = Date.now();
     session.lastDataAt = Date.now();
     session.recording?.close();
   });

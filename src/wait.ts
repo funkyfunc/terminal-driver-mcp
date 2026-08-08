@@ -98,29 +98,42 @@ export interface WaitResult {
  * stops matching (the temporal counterpart of an absence assertion: "delete
  * the row, then wait for it to disappear before asserting"). Either way the
  * final screen is returned, including on timeout.
+ *
+ * With `freshBaseline` (the pre-action screen's lines), only rows that DIFFER
+ * from the baseline count for matching — content that was already on screen
+ * before the action can never satisfy the wait. The stale-match antidote for
+ * expect_fresh.
  */
 export async function waitForPattern(
   session: TerminalSession,
   pattern: RegExp,
   timeoutMs: number,
   absent = false,
+  freshBaseline?: string[],
 ): Promise<WaitResult> {
   const start = Date.now();
   let sessionEnded = false;
   const goal = absent ? `${pattern} to disappear` : pattern;
+  const changedRows = (screen: string): string =>
+    screen
+      .split("\n")
+      .filter((line, i) => line !== freshBaseline?.[i])
+      .join("\n");
+  const isMatch = (screen: string): boolean =>
+    freshBaseline && !absent ? pattern.test(changedRows(screen)) : pattern.test(screen);
 
   for (;;) {
     const screen = await snapshotText(session);
     const elapsedMs = Date.now() - start;
 
     // Satisfied when the pattern is present (normal) or gone (absent).
-    if (pattern.test(screen) !== absent) {
+    if (isMatch(screen) !== absent) {
       const how = absent ? `no longer present after ${elapsedMs}ms` : `matched after ${elapsedMs}ms`;
       // Return the settled frame, not the possibly-torn one that matched. If
       // settling changed the answer, say so rather than return a confusing mix.
       const settled = await settledSnapshot(session);
       let note = "";
-      if (pattern.test(settled) === absent) {
+      if (isMatch(settled) === absent) {
         note = absent
           ? " Note: the pattern REAPPEARED while the frame settled — the app may redraw it periodically."
           : " Note: the matched content disappeared while the frame settled (it was transient); the returned screen is the settled one.";
@@ -139,7 +152,14 @@ export async function waitForPattern(
       };
     }
     if (elapsedMs >= timeoutMs) {
-      const hint = absent ? "" : await patternTimeoutHint(session, pattern);
+      let hint: string;
+      if (!absent && freshBaseline && pattern.test(screen)) {
+        hint =
+          " Note: the pattern matches only content that was ALREADY on screen before the action — " +
+          "expect_fresh excluded those unchanged rows, so the action likely did not produce the expected output.";
+      } else {
+        hint = absent ? "" : await patternTimeoutHint(session, pattern);
+      }
       return {
         ok: false,
         elapsedMs,

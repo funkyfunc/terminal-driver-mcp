@@ -7,10 +7,11 @@ import { fileURLToPath } from "node:url";
 export const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 export const SERVER = join(TEST_DIR, "..", "dist", "index.js");
 
-export async function startServer(env = {}) {
+export async function startServer(env = {}, spawnOpts = {}) {
   const child = spawn("node", [SERVER], {
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, ...env },
+    ...spawnOpts,
   });
   child.stderr.on("data", () => {});
 

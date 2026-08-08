@@ -1,6 +1,6 @@
 // End-to-end test: drives terminal-driver-mcp over stdio JSON-RPC and runs vim + resize scenarios.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeChecker, SERVER, startServer, TEST_DIR } from "./mcp-client.mjs";
 
@@ -435,7 +435,76 @@ check(
   !r.isError && r.text.includes("already on screen BEFORE"),
   r.text,
 );
+
+// expect_fresh: the same pre-existing content can no longer satisfy the wait…
+r = await call("session_write", {
+  session_id: "stale",
+  input: "y",
+  special_keys: ["enter"],
+  expect: "READY-STALE",
+  expect_fresh: true,
+  expect_timeout_ms: 1200,
+});
+check(
+  "expect_fresh refuses the stale match and explains why",
+  r.isError && r.text.includes("ALREADY on screen"),
+  r.text,
+);
+// …but content that appears on a changed row matches normally (cat echoes it).
+r = await call("session_write", {
+  session_id: "stale",
+  input: "FRESH-CONTENT",
+  special_keys: ["enter"],
+  expect: "FRESH-CONTENT",
+  expect_fresh: true,
+  expect_timeout_ms: 5000,
+});
+check("expect_fresh matches newly-appeared content", !r.isError, r.text);
+r = await call("session_write", { session_id: "stale", input: "x", expect_fresh: true });
+check("expect_fresh without expect is coached", r.isError && r.text.includes("'expect'"), r.text);
 await call("session_kill", { session_id: "stale" });
+
+// --- a vanished server cwd is a clear error, not a silent exit-1 shell ---
+{
+  const deadDir = join(REC_DIR, "vanishing-cwd");
+  mkdirSync(deadDir, { recursive: true });
+  const dc = await startServer({ TERMINAL_DRIVER_MCP_RECORDING_DIR: REC_DIR }, { cwd: deadDir });
+  rmSync(deadDir, { recursive: true, force: true });
+  const res = await dc.call("session_create", { session_id: "doomed" });
+  check(
+    "vanished server cwd is a coached error",
+    res.isError && res.text.includes("working directory no longer exists"),
+    res.text,
+  );
+  // An explicit cwd still works on the same server.
+  const okRes = await dc.call("session_create", { session_id: "saved", command: "echo alive", cwd: "/tmp" });
+  check("explicit cwd rescues a dead-cwd server", !okRes.isError, okRes.text);
+  dc.child.kill();
+}
+
+// --- exited sessions are reaped after the TTL (lazy, on list/create) ---
+{
+  const ttl = await startServer({
+    TERMINAL_DRIVER_MCP_RECORDING_DIR: REC_DIR,
+    TERMINAL_DRIVER_MCP_EXITED_TTL_MS: "400",
+  });
+  await ttl.call("session_create", { session_id: "shortlived", command: "exit 0" });
+  await ttl.call("session_wait", { session_id: "shortlived", until: "exit", timeout_ms: 5000 });
+  let res = await ttl.call("session_list", {});
+  check(
+    "exited session still listed inside the TTL",
+    !res.isError && res.text.includes("shortlived"),
+    res.text,
+  );
+  await new Promise((s) => setTimeout(s, 700));
+  res = await ttl.call("session_list", {});
+  check(
+    "exited session reaped after the TTL",
+    !res.isError && res.text.includes("No active sessions"),
+    res.text,
+  );
+  ttl.child.kill();
+}
 
 // --- timeout near-miss: closest screen line is offered ---
 r = await call("session_create", { session_id: "close", command: "printf 'STATUS: rea\\n'; sleep 60" });

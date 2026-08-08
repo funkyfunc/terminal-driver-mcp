@@ -3,6 +3,7 @@
 // match and returns the repainted screen — and says so when the matched
 // content turned out to be transient.
 import xterm from "@xterm/headless";
+import { snapshotText } from "../dist/screen.js";
 import { waitForPattern } from "../dist/wait.js";
 
 let failures = 0;
@@ -63,6 +64,28 @@ const paint = (session, data) => {
     "stable screen returns without settle latency",
     r.ok && Date.now() - t0 < 100,
     `${Date.now() - t0}ms`,
+  );
+}
+
+// Fresh matching (expect_fresh): with a pre-action baseline, only rows that
+// changed can satisfy the pattern — pre-existing content never matches.
+{
+  const session = makeSession();
+  paint(session, "sidebar: beta/ docs/ src/\r\nprompt$ ");
+  const baseline = (await snapshotText(session)).split("\n");
+  const stale = await waitForPattern(session, /beta/, 300, false, baseline);
+  check("fresh wait ignores pre-existing matches", !stale.ok, stale.message);
+  check(
+    "fresh timeout explains the unchanged-rows exclusion",
+    stale.message.includes("ALREADY on screen"),
+    stale.message,
+  );
+  setTimeout(() => paint(session, "\r\ncreated beta successfully"), 50);
+  const freshHit = await waitForPattern(session, /beta/, 3000, false, baseline);
+  check(
+    "fresh wait matches once the content appears on a changed row",
+    freshHit.ok && freshHit.screen.includes("created beta successfully"),
+    freshHit.message,
   );
 }
 

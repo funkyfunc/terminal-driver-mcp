@@ -299,10 +299,13 @@ export function registerTools(server: McpServer): void {
         "ctrl+<key>, alt+<char>, shift+tab, modifier chords like shift+escape, space, delete, insert) is sent " +
         "in order, then 'raw_hex' bytes if given. Keys are held until the app finishes rendering 'input', so a " +
         "trailing Enter always submits the complete text. If 'expect' is given, waits for that regex to appear " +
-        "and returns the matching screen (or errors with the final screen on timeout) — a write+wait in one call. " +
+        "and returns the matching screen (or errors with the final screen on timeout) — a write+wait in one call; " +
+        "add expect_fresh:true so only content that CHANGED after the write can match (immune to the same text " +
+        "already sitting elsewhere on screen). " +
         "Set paste:true to deliver 'input' as ONE bracketed paste (multi-line text lands atomically: newlines " +
         "don't submit, REPLs/editors don't auto-indent it) — requires the app to have bracketed paste on. " +
-        "Note: submitting a command requires special_keys: ['enter'].",
+        "Note: submitting a command requires special_keys: ['enter']. If input keeps landing on a mid-redraw " +
+        "screen, create the session with auto_wait:true.",
       inputSchema: {
         session_id: sessionId,
         input: z.string().default("").describe("Literal text to type (no newline appended)"),
@@ -329,76 +332,105 @@ export function registerTools(server: McpServer): void {
           .describe(
             "If set, wait for this regex on screen after writing, returning the matching (or timeout) screen",
           ),
+        expect_fresh: z
+          .boolean()
+          .default(false)
+          .describe(
+            "With 'expect': only rows that CHANGED since before this write can satisfy the pattern — " +
+              "pre-existing screen content (sidebars, old output) can never produce a stale match",
+          ),
         expect_timeout_ms: z.number().int().min(50).max(120000).default(10000),
       },
     },
-    safe(async ({ session_id, input, special_keys, paste, raw_hex, expect, expect_timeout_ms }) => {
-      const session = getSession(session_id);
-      if (session.exited) {
-        return fail(
-          `Session "${session_id}" has exited (code ${session.exitCode}); cannot write. Screen is still readable via session_read.`,
-        );
-      }
-      // A paste is literal by declaration — key-name-looking text is intended.
-      const mistake = paste ? null : literalKeyMistake(input);
-      if (mistake) return fail(mistake);
-      if (paste && !bracketedPasteMode(session)) {
-        return fail(
-          "paste:true, but the app has not enabled bracketed paste mode (DECSET 2004), so the paste markers " +
-            "would arrive as stray input. Check session_info; if the app never enables it, send the text as " +
-            "plain 'input' instead (newlines will act as Enter).",
-        );
-      }
-
-      // Encode everything up front so a bad key name, bad hex, or bad regex
-      // fails before any bytes are sent (avoids leaving the terminal half-written).
-      const app = appCursorMode(session);
-      const encoded = special_keys.map((k) => encodeKey(k, app));
-      const rawBytes = decodeHex(raw_hex);
-      let regex: RegExp | undefined;
-      if (expect !== undefined) {
-        try {
-          regex = new RegExp(expect, "m");
-        } catch (err) {
-          return fail(`Invalid expect regex "${expect}": ${err instanceof Error ? err.message : err}`);
+    safe(
+      async ({
+        session_id,
+        input,
+        special_keys,
+        paste,
+        raw_hex,
+        expect,
+        expect_fresh,
+        expect_timeout_ms,
+      }) => {
+        const session = getSession(session_id);
+        if (session.exited) {
+          return fail(
+            `Session "${session_id}" has exited (code ${session.exitCode}); cannot write. Screen is still readable via session_read.`,
+          );
         }
-      }
-
-      // Stale-match guard: if the expect pattern already matches the screen
-      // BEFORE anything is written, an instant "match" after the write proves
-      // nothing about this input — flag it in the result.
-      const preMatched = regex ? regex.test(await snapshotText(session)) : false;
-
-      await actionPrecondition(session);
-      if (input) {
-        const writtenAt = Date.now();
-        writeToSession(session, paste ? wrapPaste(input) : input);
-        // Let the app finish rendering the input before trailing keys land, so
-        // a submit key (Enter) can't be processed against half-applied text.
-        // Measured from the write, not last output, so an in-flight echo counts.
-        if (encoded.length > 0 || rawBytes) {
-          const { idleMs, timeoutMs } = SETTLE.betweenInputAndKeys;
-          await waitForIdleSince(session, writtenAt, idleMs, timeoutMs);
+        // A paste is literal by declaration — key-name-looking text is intended.
+        const mistake = paste ? null : literalKeyMistake(input);
+        if (mistake) return fail(mistake);
+        if (paste && !bracketedPasteMode(session)) {
+          return fail(
+            "paste:true, but the app has not enabled bracketed paste mode (DECSET 2004), so the paste markers " +
+              "would arrive as stray input. Check session_info; if the app never enables it, send the text as " +
+              "plain 'input' instead (newlines will act as Enter).",
+          );
         }
-      }
-      for (const bytes of encoded) writeToSession(session, bytes);
-      if (rawBytes) writeToSession(session, rawBytes);
 
-      if (regex) {
-        const result = await waitForPattern(session, regex, expect_timeout_ms);
-        const staleNote =
-          result.ok && preMatched
-            ? "\nNote: the expect pattern was already on screen BEFORE this write, so this match may be " +
-              "stale content rather than a result of the input. If the action should change the screen, " +
-              "first wait for the old state to clear (session_wait until:'pattern_gone'), or expect text " +
-              "unique to the new state."
-            : "";
-        const text = `${result.message}${staleNote}\n${statusHeader(session)}\n${result.screen}`;
-        return result.ok ? ok(text) : fail(text);
-      }
-      await settle(session, SETTLE.afterWrite);
-      return ok(await screenWithHeader(session_id));
-    }),
+        // Encode everything up front so a bad key name, bad hex, or bad regex
+        // fails before any bytes are sent (avoids leaving the terminal half-written).
+        const app = appCursorMode(session);
+        const encoded = special_keys.map((k) => encodeKey(k, app));
+        const rawBytes = decodeHex(raw_hex);
+        let regex: RegExp | undefined;
+        if (expect !== undefined) {
+          try {
+            regex = new RegExp(expect, "m");
+          } catch (err) {
+            return fail(`Invalid expect regex "${expect}": ${err instanceof Error ? err.message : err}`);
+          }
+        }
+
+        if (expect_fresh && regex === undefined) {
+          return fail("'expect_fresh' only applies together with 'expect'.");
+        }
+        // Stale-match guard: if the expect pattern already matches the screen
+        // BEFORE anything is written, an instant "match" after the write proves
+        // nothing about this input — flag it in the result (or, with
+        // expect_fresh, exclude that content from matching entirely).
+        const preScreen = regex ? await snapshotText(session) : "";
+        const preMatched = regex ? regex.test(preScreen) : false;
+
+        await actionPrecondition(session);
+        if (input) {
+          const writtenAt = Date.now();
+          writeToSession(session, paste ? wrapPaste(input) : input);
+          // Let the app finish rendering the input before trailing keys land, so
+          // a submit key (Enter) can't be processed against half-applied text.
+          // Measured from the write, not last output, so an in-flight echo counts.
+          if (encoded.length > 0 || rawBytes) {
+            const { idleMs, timeoutMs } = SETTLE.betweenInputAndKeys;
+            await waitForIdleSince(session, writtenAt, idleMs, timeoutMs);
+          }
+        }
+        for (const bytes of encoded) writeToSession(session, bytes);
+        if (rawBytes) writeToSession(session, rawBytes);
+
+        if (regex) {
+          const result = await waitForPattern(
+            session,
+            regex,
+            expect_timeout_ms,
+            false,
+            expect_fresh ? preScreen.split("\n") : undefined,
+          );
+          const staleNote =
+            result.ok && preMatched && !expect_fresh
+              ? "\nNote: the expect pattern was already on screen BEFORE this write, so this match may be " +
+                "stale content rather than a result of the input. Retry with expect_fresh:true (only rows " +
+                "that changed after the write can match), or wait for the old state to clear first " +
+                "(session_wait until:'pattern_gone')."
+              : "";
+          const text = `${result.message}${staleNote}\n${statusHeader(session)}\n${result.screen}`;
+          return result.ok ? ok(text) : fail(text);
+        }
+        await settle(session, SETTLE.afterWrite);
+        return ok(await screenWithHeader(session_id));
+      },
+    ),
   );
 
   server.registerTool(
@@ -409,8 +441,9 @@ export function registerTools(server: McpServer): void {
       description:
         "Block until the session reaches a condition, then return the screen (also returned on timeout, as an " +
         "error). until:'pattern' (default) polls every 50ms for a regex on the plain-text grid — the reliable " +
-        "primitive when you know what you're waiting for. 'pattern_gone' waits until the regex STOPS matching " +
-        "(spinner/dialog/just-deleted row cleared, without racing the redraw). 'idle' resolves when no output " +
+        "primitive when you know what you're waiting for. 'pattern_gone' is the wait-for-disappear primitive: " +
+        "block until the regex STOPS matching (spinner gone, overlay closed, row deleted) — no read loops " +
+        "needed, no race with the redraw. 'idle' resolves when no output " +
         "bytes arrive for idle_ms; 'stable_screen' when the rendered text is unchanged for idle_ms (better for " +
         "apps that emit bytes without visual change) — both are best-effort and time out on continuously-" +
         "animating UIs. 'exit' resolves when the session's process terminates (e.g. after :q / ctrl+d).",
